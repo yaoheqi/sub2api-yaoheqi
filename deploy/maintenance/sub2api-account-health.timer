@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Sub2API account health check every 30 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=30min
+RandomizedDelaySec=45s
+Persistent=true
+Unit=sub2api-account-health.service
+
+[Install]
+WantedBy=timers.target

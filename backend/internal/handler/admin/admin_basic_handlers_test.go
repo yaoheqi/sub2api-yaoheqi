@@ -52,6 +52,7 @@ func setupAdminRouter() (*gin.Engine, *stubAdminService) {
 	router.POST("/api/v1/admin/proxies", proxyHandler.Create)
 	router.PUT("/api/v1/admin/proxies/:id", proxyHandler.Update)
 	router.DELETE("/api/v1/admin/proxies/:id", proxyHandler.Delete)
+	router.POST("/api/v1/admin/proxies/batch", proxyHandler.BatchCreate)
 	router.POST("/api/v1/admin/proxies/batch-delete", proxyHandler.BatchDelete)
 	router.POST("/api/v1/admin/proxies/:id/test", proxyHandler.Test)
 	router.POST("/api/v1/admin/proxies/:id/quality-check", proxyHandler.CheckQuality)
@@ -267,7 +268,7 @@ func TestGroupHandlerEndpoints(t *testing.T) {
 }
 
 func TestProxyHandlerEndpoints(t *testing.T) {
-	router, _ := setupAdminRouter()
+	router, adminSvc := setupAdminRouter()
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/proxies", nil)
@@ -290,6 +291,17 @@ func TestProxyHandlerEndpoints(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
+
+	body, _ = json.Marshal(map[string]any{"proxies": []map[string]any{
+		{"protocol": "http", "host": "127.0.0.1", "port": 8080},
+		{"protocol": "socks5", "host": "127.0.0.2", "port": 1080},
+	}})
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/proxies/batch", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Len(t, adminSvc.createdProxies, 3)
 
 	body, _ = json.Marshal(map[string]any{"name": "proxy2"})
 	rec = httptest.NewRecorder()

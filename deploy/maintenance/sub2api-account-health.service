@@ -1,0 +1,23 @@
+[Unit]
+Description=Sub2API account health check
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/sub2api
+Environment=SUB2API_HEALTH_WORKERS=8
+Environment=SUB2API_HEALTH_TIMEOUT=90
+Environment=SUB2API_HEALTH_RETRIES=2
+Environment=SUB2API_HEALTH_RETRY_DELAY=8
+Environment=SUB2API_HEALTH_TRANSIENT_MINUTES=15
+ExecStart=/usr/bin/python3 /opt/sub2api/maintenance/account_healthcheck.py
+StandardOutput=append:/var/log/sub2api-account-health.log
+StandardError=append:/var/log/sub2api-account-health.log
+TimeoutStartSec=20min
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

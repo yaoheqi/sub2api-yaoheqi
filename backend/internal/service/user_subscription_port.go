@@ -37,3 +37,11 @@ type UserSubscriptionRepository interface {
 
 	BatchUpdateExpiredStatus(ctx context.Context) (int64, error)
 }
+
+// UserSubscriptionBatchRepository keeps bulk assignment at a fixed number of
+// SQL statements while preserving per-user create/reuse/conflict semantics.
+type UserSubscriptionBatchRepository interface {
+	GetByUserIDsAndGroupID(ctx context.Context, userIDs []int64, groupID int64) ([]UserSubscription, error)
+	CreateBatchForExistingUsers(ctx context.Context, subscriptions []UserSubscription) (createdUserIDs, missingUserIDs []int64, err error)
+	RenewBatch(ctx context.Context, subscriptions []UserSubscription) error
+}

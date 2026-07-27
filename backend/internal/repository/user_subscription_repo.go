@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -12,6 +13,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/lib/pq"
 )
 
 type userSubscriptionRepository struct {
@@ -100,6 +102,119 @@ func (r *userSubscriptionRepository) GetByUserIDAndGroupID(ctx context.Context, 
 		return nil, translatePersistenceError(err, service.ErrSubscriptionNotFound, nil)
 	}
 	return userSubscriptionEntityToService(m), nil
+}
+
+func (r *userSubscriptionRepository) GetByUserIDsAndGroupID(ctx context.Context, userIDs []int64, groupID int64) ([]service.UserSubscription, error) {
+	if len(userIDs) == 0 {
+		return []service.UserSubscription{}, nil
+	}
+	models, err := clientFromContext(ctx, r.client).UserSubscription.Query().
+		Where(usersubscription.UserIDIn(uniqueInt64s(userIDs)...), usersubscription.GroupIDEQ(groupID)).
+		WithGroup().
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return userSubscriptionEntitiesToService(models), nil
+}
+
+func (r *userSubscriptionRepository) CreateBatchForExistingUsers(ctx context.Context, subscriptions []service.UserSubscription) ([]int64, []int64, error) {
+	if len(subscriptions) == 0 {
+		return nil, nil, nil
+	}
+	userIDs := make([]int64, 0, len(subscriptions))
+	for i := range subscriptions {
+		userIDs = append(userIDs, subscriptions[i].UserID)
+	}
+	users, err := clientFromContext(ctx, r.client).User.Query().
+		Where(user.IDIn(uniqueInt64s(userIDs)...)).
+		Select(user.FieldID).
+		All(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	existingUsers := make(map[int64]struct{}, len(users))
+	for _, model := range users {
+		existingUsers[model.ID] = struct{}{}
+	}
+	builders := make([]*dbent.UserSubscriptionCreate, 0, len(subscriptions))
+	createdUserIDs := make([]int64, 0, len(subscriptions))
+	missingUserIDs := make([]int64, 0)
+	client := clientFromContext(ctx, r.client)
+	for i := range subscriptions {
+		sub := &subscriptions[i]
+		if _, exists := existingUsers[sub.UserID]; !exists {
+			missingUserIDs = append(missingUserIDs, sub.UserID)
+			continue
+		}
+		builder := client.UserSubscription.Create().
+			SetUserID(sub.UserID).
+			SetGroupID(sub.GroupID).
+			SetStartsAt(sub.StartsAt).
+			SetExpiresAt(sub.ExpiresAt).
+			SetStatus(sub.Status).
+			SetAssignedAt(sub.AssignedAt).
+			SetNotes(sub.Notes).
+			SetNillableAssignedBy(sub.AssignedBy)
+		builders = append(builders, builder)
+		createdUserIDs = append(createdUserIDs, sub.UserID)
+	}
+	if len(builders) == 0 {
+		return nil, missingUserIDs, nil
+	}
+	if err := client.UserSubscription.CreateBulk(builders...).Exec(ctx); err != nil {
+		return nil, nil, translatePersistenceError(err, nil, service.ErrSubscriptionAlreadyExists)
+	}
+	return createdUserIDs, missingUserIDs, nil
+}
+
+func (r *userSubscriptionRepository) RenewBatch(ctx context.Context, subscriptions []service.UserSubscription) error {
+	if len(subscriptions) == 0 {
+		return nil
+	}
+	ids := make([]int64, len(subscriptions))
+	startsAt := make([]time.Time, len(subscriptions))
+	expiresAt := make([]time.Time, len(subscriptions))
+	windowStarts := make([]time.Time, len(subscriptions))
+	notes := make([]string, len(subscriptions))
+	for i := range subscriptions {
+		if subscriptions[i].DailyWindowStart == nil {
+			return fmt.Errorf("renew subscription %d: daily window start is required", subscriptions[i].ID)
+		}
+		ids[i] = subscriptions[i].ID
+		startsAt[i] = subscriptions[i].StartsAt
+		expiresAt[i] = subscriptions[i].ExpiresAt
+		windowStarts[i] = *subscriptions[i].DailyWindowStart
+		notes[i] = subscriptions[i].Notes
+	}
+	result, err := clientFromContext(ctx, r.client).ExecContext(ctx, `
+		UPDATE user_subscriptions AS subscriptions
+		SET starts_at = data.starts_at,
+			expires_at = data.expires_at,
+			status = $1,
+			daily_window_start = data.window_start,
+			weekly_window_start = data.window_start,
+			monthly_window_start = data.window_start,
+			daily_usage_usd = 0,
+			weekly_usage_usd = 0,
+			monthly_usage_usd = 0,
+			notes = data.notes,
+			updated_at = NOW()
+		FROM unnest($2::bigint[], $3::timestamptz[], $4::timestamptz[], $5::timestamptz[], $6::text[])
+			AS data(id, starts_at, expires_at, window_start, notes)
+		WHERE subscriptions.id = data.id AND subscriptions.deleted_at IS NULL
+	`, service.SubscriptionStatusActive, pq.Array(ids), pq.Array(startsAt), pq.Array(expiresAt), pq.Array(windowStarts), pq.Array(notes))
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != int64(len(ids)) {
+		return service.ErrSubscriptionNotFound
+	}
+	return nil
 }
 
 func (r *userSubscriptionRepository) GetActiveByUserIDAndGroupID(ctx context.Context, userID, groupID int64) (*service.UserSubscription, error) {

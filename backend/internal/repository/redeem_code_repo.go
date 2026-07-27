@@ -64,7 +64,14 @@ func (r *redeemCodeRepository) CreateBatch(ctx context.Context, codes []service.
 		builders = append(builders, b)
 	}
 
-	return r.client.RedeemCode.CreateBulk(builders...).Exec(ctx)
+	created, err := r.client.RedeemCode.CreateBulk(builders...).Save(ctx)
+	if err != nil {
+		return err
+	}
+	for i := range created {
+		codes[i] = *redeemCodeEntityToService(created[i])
+	}
+	return nil
 }
 
 func (r *redeemCodeRepository) GetByID(ctx context.Context, id int64) (*service.RedeemCode, error) {
@@ -96,6 +103,31 @@ func (r *redeemCodeRepository) GetByCode(ctx context.Context, code string) (*ser
 func (r *redeemCodeRepository) Delete(ctx context.Context, id int64) error {
 	_, err := r.client.RedeemCode.Delete().Where(redeemcode.IDEQ(id)).Exec(ctx)
 	return err
+}
+
+func (r *redeemCodeRepository) DeleteBatch(ctx context.Context, ids []int64) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	uniqueIDs := make([]int64, 0, len(ids))
+	seen := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		uniqueIDs = append(uniqueIDs, id)
+	}
+	if len(uniqueIDs) == 0 {
+		return 0, nil
+	}
+	deleted, err := clientFromContext(ctx, r.client).RedeemCode.Delete().
+		Where(redeemcode.IDIn(uniqueIDs...)).
+		Exec(ctx)
+	return int64(deleted), err
 }
 
 func (r *redeemCodeRepository) List(ctx context.Context, params pagination.PaginationParams) ([]service.RedeemCode, *pagination.PaginationResult, error) {

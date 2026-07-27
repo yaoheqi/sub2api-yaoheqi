@@ -1072,7 +1072,21 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		}
 	}
 
-	// Handle group bindings per account (requires individual operations).
+	if input.GroupIDs != nil {
+		if batchRepo, ok := s.accountRepo.(AccountBatchMutationRepository); ok {
+			if err := batchRepo.BindGroupsBulk(ctx, input.AccountIDs, *input.GroupIDs); err != nil {
+				return nil, err
+			}
+			for _, accountID := range input.AccountIDs {
+				result.Success++
+				result.SuccessIDs = append(result.SuccessIDs, accountID)
+				result.Results = append(result.Results, BulkUpdateAccountResult{AccountID: accountID, Success: true})
+			}
+			return result, nil
+		}
+	}
+
+	// Compatibility path for alternate repositories that do not expose bulk bindings.
 	for _, accountID := range input.AccountIDs {
 		entry := BulkUpdateAccountResult{AccountID: accountID}
 
@@ -1216,6 +1230,33 @@ func (s *adminServiceImpl) ClearAccountError(ctx context.Context, id int64) (*Ac
 		s.runtimeBlocker.ClearAccountSchedulingBlock(id)
 	}
 	return s.accountRepo.GetByID(ctx, id)
+}
+
+func (s *adminServiceImpl) BatchClearAccountErrors(ctx context.Context, ids []int64) ([]*Account, error) {
+	if batchRepo, ok := s.accountRepo.(AccountBatchMutationRepository); ok {
+		accounts, err := batchRepo.BulkClearErrors(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
+		if s.runtimeBlocker != nil {
+			for _, account := range accounts {
+				if account != nil {
+					s.runtimeBlocker.ClearAccountSchedulingBlock(account.ID)
+				}
+			}
+		}
+		return accounts, nil
+	}
+
+	accounts := make([]*Account, 0, len(ids))
+	for _, id := range ids {
+		account, err := s.ClearAccountError(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		accounts = append(accounts, account)
+	}
+	return accounts, nil
 }
 
 func (s *adminServiceImpl) SetAccountError(ctx context.Context, id int64, errorMsg string) error {

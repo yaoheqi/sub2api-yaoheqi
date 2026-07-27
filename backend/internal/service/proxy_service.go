@@ -37,6 +37,13 @@ type ProxyRepository interface {
 	CountExpiringSoon(ctx context.Context, now time.Time) (int64, error)
 }
 
+// ProxyBatchRepository is implemented by repositories that can execute admin
+// proxy batches with a fixed number of SQL statements.
+type ProxyBatchRepository interface {
+	CreateBatchMissing(ctx context.Context, proxies []Proxy) ([]Proxy, error)
+	DeleteUnusedBatch(ctx context.Context, ids []int64) (deletedIDs, blockedIDs []int64, err error)
+}
+
 // CreateProxyRequest 创建代理请求
 type CreateProxyRequest struct {
 	Name     string `json:"name"`

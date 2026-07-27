@@ -43,7 +43,7 @@ func DefaultModelIDs() []string {
 }
 
 // DefaultTestModel default model for testing OpenAI accounts
-const DefaultTestModel = "gpt-5.4"
+const DefaultTestModel = "gpt-5.5"
 
 // DefaultInstructions default instructions for non-Codex CLI requests.
 // 内容为真实 Codex CLI 的 GPT-5-Codex base prompt（codex 系模型默认）。

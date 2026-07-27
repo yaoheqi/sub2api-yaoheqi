@@ -454,6 +454,9 @@ type BulkAssignResult struct {
 
 // BulkAssignSubscription 批量分配订阅
 func (s *SubscriptionService) BulkAssignSubscription(ctx context.Context, input *BulkAssignSubscriptionInput) (*BulkAssignResult, error) {
+	if batchRepo, ok := s.userSubRepo.(UserSubscriptionBatchRepository); ok {
+		return s.bulkAssignSubscriptionSQL(ctx, input, batchRepo)
+	}
 	result := &BulkAssignResult{
 		Subscriptions: make([]UserSubscription, 0),
 		Errors:        make([]string, 0),
@@ -485,6 +488,136 @@ func (s *SubscriptionService) BulkAssignSubscription(ctx context.Context, input 
 		}
 	}
 
+	return result, nil
+}
+
+func (s *SubscriptionService) bulkAssignSubscriptionSQL(ctx context.Context, input *BulkAssignSubscriptionInput, batchRepo UserSubscriptionBatchRepository) (*BulkAssignResult, error) {
+	result := &BulkAssignResult{
+		Subscriptions: make([]UserSubscription, 0, len(input.UserIDs)),
+		Errors:        make([]string, 0),
+		Statuses:      make(map[int64]string, len(input.UserIDs)),
+	}
+	group, err := s.groupRepo.GetByID(ctx, input.GroupID)
+	if err != nil {
+		return nil, fmt.Errorf("group not found: %w", err)
+	}
+	if !group.IsSubscriptionType() {
+		return nil, ErrGroupNotSubscriptionType
+	}
+
+	userIDs := make([]int64, 0, len(input.UserIDs))
+	seen := make(map[int64]struct{}, len(input.UserIDs))
+	for _, userID := range input.UserIDs {
+		if userID <= 0 {
+			result.FailedCount++
+			result.Statuses[userID] = "failed"
+			result.Errors = append(result.Errors, fmt.Sprintf("user %d: user not found", userID))
+			continue
+		}
+		if _, exists := seen[userID]; exists {
+			continue
+		}
+		seen[userID] = struct{}{}
+		userIDs = append(userIDs, userID)
+	}
+	existing, err := batchRepo.GetByUserIDsAndGroupID(ctx, userIDs, input.GroupID)
+	if err != nil {
+		return nil, err
+	}
+	existingByUser := make(map[int64]*UserSubscription, len(existing))
+	for i := range existing {
+		sub := existing[i]
+		existingByUser[sub.UserID] = &sub
+	}
+
+	now := time.Now()
+	validityDays := normalizeAssignValidityDays(input.ValidityDays)
+	expiresAt := now.AddDate(0, 0, validityDays)
+	if expiresAt.After(MaxExpiresAt) {
+		expiresAt = MaxExpiresAt
+	}
+	creates := make([]UserSubscription, 0)
+	renewals := make([]UserSubscription, 0)
+	changedUsers := make(map[int64]struct{})
+	for _, userID := range userIDs {
+		existingSub := existingByUser[userID]
+		if existingSub == nil {
+			sub := UserSubscription{
+				UserID: userID, GroupID: input.GroupID, StartsAt: now, ExpiresAt: expiresAt,
+				Status: SubscriptionStatusActive, AssignedAt: now, Notes: input.Notes,
+			}
+			if input.AssignedBy > 0 {
+				sub.AssignedBy = &input.AssignedBy
+			}
+			creates = append(creates, sub)
+			continue
+		}
+		if existingSub.Status == SubscriptionStatusExpired ||
+			(existingSub.Status != SubscriptionStatusSuspended && !existingSub.ExpiresAt.After(now)) {
+			renewalNotes := input.Notes
+			if strings.TrimSpace(existingSub.Notes) == strings.TrimSpace(input.Notes) {
+				renewalNotes = ""
+			}
+			renewals = append(renewals, *renewedSubscriptionTerm(existingSub, renewalNotes, now, expiresAt))
+			result.Statuses[userID] = "reused"
+			changedUsers[userID] = struct{}{}
+			continue
+		}
+		assignInput := &AssignSubscriptionInput{UserID: userID, GroupID: input.GroupID, ValidityDays: input.ValidityDays, AssignedBy: input.AssignedBy, Notes: input.Notes}
+		if conflictReason, conflict := detectAssignSemanticConflict(existingSub, assignInput); conflict {
+			result.Statuses[userID] = "failed"
+			result.Errors = append(result.Errors, fmt.Sprintf("user %d: subscription assignment conflict (%s)", userID, conflictReason))
+			continue
+		}
+		result.Statuses[userID] = "reused"
+	}
+
+	var createdIDs, missingIDs []int64
+	if err := s.withSubscriptionUpdateTx(ctx, func(txCtx context.Context) error {
+		var batchErr error
+		createdIDs, missingIDs, batchErr = batchRepo.CreateBatchForExistingUsers(txCtx, creates)
+		if batchErr != nil {
+			return batchErr
+		}
+		return batchRepo.RenewBatch(txCtx, renewals)
+	}); err != nil {
+		return nil, err
+	}
+	for _, userID := range createdIDs {
+		result.Statuses[userID] = "created"
+		changedUsers[userID] = struct{}{}
+	}
+	for _, userID := range missingIDs {
+		result.Statuses[userID] = "failed"
+		result.Errors = append(result.Errors, fmt.Sprintf("user %d: user not found", userID))
+	}
+	finalSubs, err := batchRepo.GetByUserIDsAndGroupID(ctx, userIDs, input.GroupID)
+	if err != nil {
+		return nil, err
+	}
+	finalByUser := make(map[int64]UserSubscription, len(finalSubs))
+	for i := range finalSubs {
+		finalByUser[finalSubs[i].UserID] = finalSubs[i]
+	}
+	for _, userID := range userIDs {
+		switch result.Statuses[userID] {
+		case "created":
+			result.SuccessCount++
+			result.CreatedCount++
+		case "reused":
+			result.SuccessCount++
+			result.ReusedCount++
+		default:
+			result.FailedCount++
+			continue
+		}
+		if sub, exists := finalByUser[userID]; exists {
+			result.Subscriptions = append(result.Subscriptions, sub)
+		}
+	}
+	for userID := range changedUsers {
+		s.maybeInvalidateAssignmentCaches(userID, input.GroupID, false)
+	}
 	return result, nil
 }
 

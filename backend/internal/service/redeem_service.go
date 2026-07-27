@@ -68,6 +68,10 @@ type RedeemCodeRepository interface {
 	SumPositiveBalanceByUser(ctx context.Context, userID int64) (float64, error)
 }
 
+type RedeemCodeBatchDeleteRepository interface {
+	DeleteBatch(ctx context.Context, ids []int64) (int64, error)
+}
+
 // GenerateCodesRequest 生成兑换码请求
 type GenerateCodesRequest struct {
 	Count int     `json:"count"`

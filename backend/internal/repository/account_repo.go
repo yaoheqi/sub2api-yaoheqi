@@ -1654,6 +1654,56 @@ func (r *accountRepository) ClearError(ctx context.Context, id int64) error {
 	return nil
 }
 
+func (r *accountRepository) BulkClearErrors(ctx context.Context, ids []int64) ([]*service.Account, error) {
+	ids = sortedUniqueAccountIDs(ids)
+	if len(ids) == 0 {
+		return []*service.Account{}, nil
+	}
+
+	rows, err := r.sql.QueryContext(ctx, `
+		UPDATE accounts
+		SET status = $1,
+			error_message = '',
+			rate_limited_at = NULL,
+			rate_limit_reset_at = NULL,
+			overload_until = NULL,
+			temp_unschedulable_until = NULL,
+			temp_unschedulable_reason = NULL,
+			extra = (COALESCE(extra, '{}'::jsonb) - 'antigravity_quota_scopes') - 'model_rate_limits',
+			updated_at = NOW()
+		WHERE id = ANY($2) AND deleted_at IS NULL
+		RETURNING id
+	`, service.StatusActive, pq.Array(ids))
+	if err != nil {
+		return nil, err
+	}
+	updatedIDs := make([]int64, 0, len(ids))
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		updatedIDs = append(updatedIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if len(updatedIDs) == 0 {
+		return []*service.Account{}, nil
+	}
+	payload := map[string]any{"account_ids": updatedIDs}
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountBulkChanged, nil, nil, payload); err != nil {
+		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue bulk clear errors failed: count=%d err=%v", len(updatedIDs), err)
+	}
+	r.syncSchedulerAccountSnapshots(ctx, updatedIDs)
+	return r.GetByIDs(ctx, updatedIDs)
+}
+
 func (r *accountRepository) AddToGroup(ctx context.Context, accountID, groupID int64, priority int) error {
 	_, err := r.client.AccountGroup.Create().
 		SetAccountID(accountID).
@@ -1756,6 +1806,63 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 	payload := buildSchedulerGroupPayload(mergeGroupIDs(existingGroupIDs, groupIDs))
 	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountGroupsChanged, &accountID, nil, payload); err != nil {
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue bind groups failed: account=%d err=%v", accountID, err)
+	}
+	return nil
+}
+
+func (r *accountRepository) BindGroupsBulk(ctx context.Context, accountIDs, groupIDs []int64) error {
+	accountIDs = sortedUniqueAccountIDs(accountIDs)
+	if len(accountIDs) == 0 {
+		return nil
+	}
+
+	seenGroups := make(map[int64]struct{}, len(groupIDs))
+	cleanGroups := make([]int64, 0, len(groupIDs))
+	for _, groupID := range groupIDs {
+		if groupID <= 0 {
+			continue
+		}
+		if _, seen := seenGroups[groupID]; seen {
+			continue
+		}
+		seenGroups[groupID] = struct{}{}
+		cleanGroups = append(cleanGroups, groupID)
+	}
+
+	contextTx := dbent.TxFromContext(ctx)
+	client := clientFromContext(ctx, r.client)
+	var tx *dbent.Tx
+	if contextTx == nil {
+		var err error
+		tx, err = r.client.Tx(ctx)
+		if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
+			return err
+		}
+		if tx != nil {
+			defer func() { _ = tx.Rollback() }()
+			client = tx.Client()
+		}
+	}
+
+	if _, err := client.ExecContext(ctx, `DELETE FROM account_groups WHERE account_id = ANY($1)`, pq.Array(accountIDs)); err != nil {
+		return err
+	}
+	if len(cleanGroups) > 0 {
+		if _, err := client.ExecContext(ctx, `
+			INSERT INTO account_groups (account_id, group_id, priority, created_at)
+			SELECT account_id, group_id, priority::integer, NOW()
+			FROM unnest($1::bigint[]) AS accounts(account_id)
+			CROSS JOIN unnest($2::bigint[]) WITH ORDINALITY AS groups(group_id, priority)
+		`, pq.Array(accountIDs), pq.Array(cleanGroups)); err != nil {
+			return err
+		}
+	}
+	payload := map[string]any{"account_ids": accountIDs}
+	if err := enqueueSchedulerOutbox(ctx, client, service.SchedulerOutboxEventAccountBulkChanged, nil, nil, payload); err != nil {
+		return err
+	}
+	if tx != nil {
+		return tx.Commit()
 	}
 	return nil
 }
@@ -2401,9 +2508,10 @@ func (r *accountRepository) SetSchedulable(ctx context.Context, id int64, schedu
 	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue schedulable change failed: account=%d err=%v", id, err)
 	}
-	if !schedulable {
-		r.syncSchedulerAccountSnapshot(ctx, id)
-	}
+	// Both disabling and re-enabling must reach the local scheduler immediately.
+	// The outbox is the durable cross-instance path, but waiting for its poll can
+	// leave a just-enabled account absent from this instance's routing snapshot.
+	r.syncSchedulerAccountSnapshot(ctx, id)
 	return nil
 }
 

@@ -800,12 +800,19 @@ func (s *AccountRepoSuite) TestSetSchedulable() {
 	s.repo.schedulerCache = cacheRecorder
 
 	s.Require().NoError(s.repo.SetSchedulable(s.ctx, account.ID, false))
-
 	got, err := s.repo.GetByID(s.ctx, account.ID)
 	s.Require().NoError(err)
 	s.Require().False(got.Schedulable)
 	s.Require().Len(cacheRecorder.setAccounts, 1)
 	s.Require().Equal(account.ID, cacheRecorder.setAccounts[0].ID)
+
+	s.Require().NoError(s.repo.SetSchedulable(s.ctx, account.ID, true))
+	got, err = s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().True(got.Schedulable)
+	s.Require().Len(cacheRecorder.setAccounts, 2)
+	s.Require().Equal(account.ID, cacheRecorder.setAccounts[1].ID)
+	s.Require().True(cacheRecorder.setAccounts[1].Schedulable)
 }
 
 func (s *AccountRepoSuite) TestBulkUpdate_SyncSchedulerSnapshotOnDisabled() {

@@ -882,6 +882,13 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(resp *http
 	if err != nil {
 		return OpenAIUsage{}, 0, nil, err
 	}
+	if s.cfg != nil {
+		body = rewriteOpenAIImageResponseURLs(
+			body,
+			s.cfg.Gateway.ImageURLRewriteFrom,
+			s.cfg.Gateway.ImageURLRewriteTo,
+		)
+	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	contentType := "application/json"
 	if s.cfg != nil && !s.cfg.Security.ResponseHeaders.Enabled {
@@ -940,6 +947,13 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 	processLine := func(line []byte) {
 		if len(line) == 0 {
 			return
+		}
+		if s.cfg != nil {
+			line = rewriteOpenAIImageSSELine(
+				line,
+				s.cfg.Gateway.ImageURLRewriteFrom,
+				s.cfg.Gateway.ImageURLRewriteTo,
+			)
 		}
 		if firstTokenMs == nil {
 			ms := int(time.Since(startTime).Milliseconds())

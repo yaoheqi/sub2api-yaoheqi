@@ -53,9 +53,10 @@ type TestEvent struct {
 }
 
 const (
-	defaultGeminiTextTestPrompt  = "hi"
-	defaultGeminiImageTestPrompt = "Generate a cute orange cat astronaut sticker on a clean pastel background."
-	defaultOpenAIImageTestPrompt = "Generate a cute orange cat astronaut sticker on a clean pastel background."
+	defaultGeminiTextTestPrompt   = "hi"
+	defaultGeminiImageTestPrompt  = "Generate a cute orange cat astronaut sticker on a clean pastel background."
+	defaultOpenAIImageTestPrompt  = "Generate a cute orange cat astronaut sticker on a clean pastel background."
+	defaultOpenAI429ProbeCooldown = 30 * time.Minute
 )
 
 // isOpenAIImageModel checks if the model is an OpenAI image generation model (e.g. gpt-image-2).
@@ -693,10 +694,8 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		if resp.StatusCode == http.StatusTooManyRequests {
 			s.reconcileOpenAI429State(ctx, account, resp.Header, body)
 		}
-		// 401 Unauthorized: 标记账号为永久错误
 		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
-			errMsg := fmt.Sprintf("Authentication failed (401): %s", string(body))
-			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
+			s.reconcileOpenAI401State(ctx, account, body)
 		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
 	}
@@ -1021,8 +1020,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
-			errMsg := fmt.Sprintf("Authentication failed (401): %s", string(body))
-			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
+			s.reconcileOpenAI401State(ctx, account, body)
 		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
 	}
@@ -1047,7 +1045,8 @@ func (s *AccountTestService) reconcileOpenAI429State(ctx context.Context, accoun
 		resetAt = &t
 	}
 	if resetAt == nil {
-		return
+		fallback := time.Now().Add(defaultOpenAI429ProbeCooldown)
+		resetAt = &fallback
 	}
 
 	if err := s.accountRepo.SetRateLimited(ctx, account.ID, *resetAt); err != nil {
@@ -1065,6 +1064,28 @@ func (s *AccountTestService) reconcileOpenAI429State(ctx context.Context, accoun
 		account.Status = StatusActive
 		account.ErrorMessage = ""
 	}
+}
+
+func (s *AccountTestService) reconcileOpenAI401State(ctx context.Context, account *Account, body []byte) {
+	if s == nil || s.accountRepo == nil || account == nil {
+		return
+	}
+	code := strings.ToLower(strings.TrimSpace(extractUpstreamErrorCode(body)))
+	permanentlyInvalid := code == "token_invalidated" || code == "token_revoked"
+	canRefresh := account.IsOpenAIOAuth() && strings.TrimSpace(account.GetOpenAIRefreshToken()) != ""
+	if permanentlyInvalid || !canRefresh {
+		errMsg := fmt.Sprintf("Authentication failed (401): %s", string(body))
+		_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
+		return
+	}
+
+	cooldownMinutes := 10
+	if s.cfg != nil && s.cfg.RateLimit.OAuth401CooldownMinutes > 0 {
+		cooldownMinutes = s.cfg.RateLimit.OAuth401CooldownMinutes
+	}
+	until := time.Now().Add(time.Duration(cooldownMinutes) * time.Minute)
+	reason := fmt.Sprintf("OAuth 401: refresh required: %s", string(body))
+	_ = s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, reason)
 }
 
 // testGeminiAccountConnection tests a Gemini account's connection

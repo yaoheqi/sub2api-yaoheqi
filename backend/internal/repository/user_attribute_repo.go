@@ -2,11 +2,13 @@ package repository
 
 import (
 	"context"
+	"fmt"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/userattributedefinition"
 	"github.com/Wei-Shaw/sub2api/ent/userattributevalue"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/lib/pq"
 )
 
 // UserAttributeDefinitionRepository implementation
@@ -122,21 +124,33 @@ func (r *userAttributeDefinitionRepository) List(ctx context.Context, enabledOnl
 }
 
 func (r *userAttributeDefinitionRepository) UpdateDisplayOrders(ctx context.Context, orders map[int64]int) error {
-	tx, err := r.client.Tx(ctx)
+	if len(orders) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(orders))
+	values := make([]int64, 0, len(orders))
+	for id, order := range orders {
+		ids = append(ids, id)
+		values = append(values, int64(order))
+	}
+	result, err := clientFromContext(ctx, r.client).ExecContext(ctx, `
+		UPDATE user_attribute_definitions AS definitions
+		SET display_order = data.display_order::integer,
+			updated_at = NOW()
+		FROM unnest($1::bigint[], $2::bigint[]) AS data(id, display_order)
+		WHERE definitions.id = data.id
+	`, pq.Array(ids), pq.Array(values))
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
-
-	for id, order := range orders {
-		if _, err := tx.UserAttributeDefinition.UpdateOneID(id).
-			SetDisplayOrder(order).
-			Save(ctx); err != nil {
-			return translatePersistenceError(err, service.ErrAttributeDefinitionNotFound, nil)
-		}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
 	}
-
-	return tx.Commit()
+	if affected != int64(len(ids)) {
+		return service.ErrAttributeDefinitionNotFound
+	}
+	return nil
 }
 
 func (r *userAttributeDefinitionRepository) ExistsByKey(ctx context.Context, key string) (bool, error) {
@@ -213,28 +227,27 @@ func (r *userAttributeValueRepository) UpsertBatch(ctx context.Context, userID i
 		return nil
 	}
 
-	tx, err := r.client.Tx(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-
+	latest := make(map[int64]string, len(inputs))
 	for _, input := range inputs {
-		// Use upsert (ON CONFLICT DO UPDATE)
-		err := tx.UserAttributeValue.Create().
-			SetUserID(userID).
-			SetAttributeID(input.AttributeID).
-			SetValue(input.Value).
-			OnConflictColumns(userattributevalue.FieldUserID, userattributevalue.FieldAttributeID).
-			UpdateValue().
-			UpdateUpdatedAt().
-			Exec(ctx)
-		if err != nil {
-			return err
-		}
+		latest[input.AttributeID] = input.Value
 	}
-
-	return tx.Commit()
+	attributeIDs := make([]int64, 0, len(latest))
+	values := make([]string, 0, len(latest))
+	for attributeID, value := range latest {
+		attributeIDs = append(attributeIDs, attributeID)
+		values = append(values, value)
+	}
+	_, err := clientFromContext(ctx, r.client).ExecContext(ctx, `
+		INSERT INTO user_attribute_values (user_id, attribute_id, value, created_at, updated_at)
+		SELECT $1, data.attribute_id, data.value, NOW(), NOW()
+		FROM unnest($2::bigint[], $3::text[]) AS data(attribute_id, value)
+		ON CONFLICT (user_id, attribute_id)
+		DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+	`, userID, pq.Array(attributeIDs), pq.Array(values))
+	if err != nil {
+		return fmt.Errorf("batch upsert user attributes: %w", err)
+	}
+	return nil
 }
 
 func (r *userAttributeValueRepository) DeleteByAttributeID(ctx context.Context, attributeID int64) error {

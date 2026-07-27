@@ -71,6 +71,9 @@ type openAIAccountTestRepo struct {
 	clearedErrorID     int64
 	setErrorID         int64
 	setErrorMsg        string
+	tempUnschedID      int64
+	tempUnschedUntil   *time.Time
+	tempUnschedReason  string
 }
 
 func (r *openAIAccountTestRepo) UpdateExtra(_ context.Context, _ int64, updates map[string]any) error {
@@ -98,6 +101,13 @@ func (r *openAIAccountTestRepo) ClearError(_ context.Context, id int64) error {
 func (r *openAIAccountTestRepo) SetError(_ context.Context, id int64, errorMsg string) error {
 	r.setErrorID = id
 	r.setErrorMsg = errorMsg
+	return nil
+}
+
+func (r *openAIAccountTestRepo) SetTempUnschedulable(_ context.Context, id int64, until time.Time, reason string) error {
+	r.tempUnschedID = id
+	r.tempUnschedUntil = &until
+	r.tempUnschedReason = reason
 	return nil
 }
 
@@ -368,7 +378,7 @@ func TestAccountTestService_OpenAI429ActiveAccountDoesNotClearError(t *testing.T
 	require.NotNil(t, account.RateLimitResetAt)
 }
 
-func TestAccountTestService_OpenAI429WithoutResetSignalDoesNotMutateRuntimeState(t *testing.T) {
+func TestAccountTestService_OpenAI429WithoutResetSignalUsesFallbackCooldown(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := newTestContext()
 
@@ -389,12 +399,13 @@ func TestAccountTestService_OpenAI429WithoutResetSignalDoesNotMutateRuntimeState
 
 	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4", "", "")
 	require.Error(t, err)
-	require.Zero(t, repo.rateLimitedID)
-	require.Nil(t, repo.rateLimitedAt)
-	require.Zero(t, repo.clearedErrorID)
-	require.Equal(t, StatusError, account.Status)
-	require.Equal(t, "stale 403", account.ErrorMessage)
-	require.Nil(t, account.RateLimitResetAt)
+	require.Equal(t, account.ID, repo.rateLimitedID)
+	require.NotNil(t, repo.rateLimitedAt)
+	require.WithinDuration(t, time.Now().Add(defaultOpenAI429ProbeCooldown), *repo.rateLimitedAt, 2*time.Second)
+	require.Equal(t, account.ID, repo.clearedErrorID)
+	require.Equal(t, StatusActive, account.Status)
+	require.Empty(t, account.ErrorMessage)
+	require.NotNil(t, account.RateLimitResetAt)
 }
 
 func TestAccountTestService_OpenAI401SetsPermanentErrorOnly(t *testing.T) {
@@ -422,6 +433,51 @@ func TestAccountTestService_OpenAI401SetsPermanentErrorOnly(t *testing.T) {
 	require.Zero(t, repo.rateLimitedID)
 	require.Zero(t, repo.clearedErrorID)
 	require.Nil(t, account.RateLimitResetAt)
+}
+
+func TestAccountTestService_OpenAIRecoverable401UsesTemporaryCooldown(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := newTestContext()
+	resp := newJSONResponse(http.StatusUnauthorized, `{"error":{"message":"access token expired"}}`)
+	repo := &openAIAccountTestRepo{}
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
+	svc := &AccountTestService{
+		accountRepo:  repo,
+		httpUpstream: upstream,
+		cfg:          &config.Config{RateLimit: config.RateLimitConfig{OAuth401CooldownMinutes: 7}},
+	}
+	account := &Account{
+		ID: 81, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+		Status: StatusActive, Concurrency: 1,
+		Credentials: map[string]any{"access_token": "expired", "refresh_token": "refreshable"},
+	}
+
+	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.5", "", "")
+	require.Error(t, err)
+	require.Zero(t, repo.setErrorID)
+	require.Equal(t, account.ID, repo.tempUnschedID)
+	require.NotNil(t, repo.tempUnschedUntil)
+	require.WithinDuration(t, time.Now().Add(7*time.Minute), *repo.tempUnschedUntil, 2*time.Second)
+	require.Contains(t, repo.tempUnschedReason, "OAuth 401")
+}
+
+func TestAccountTestService_OpenAIRevoked401RemainsPermanent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := newTestContext()
+	resp := newJSONResponse(http.StatusUnauthorized, `{"error":{"code":"token_revoked","message":"revoked"}}`)
+	repo := &openAIAccountTestRepo{}
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	account := &Account{
+		ID: 82, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+		Status: StatusActive, Concurrency: 1,
+		Credentials: map[string]any{"access_token": "revoked", "refresh_token": "still-present"},
+	}
+
+	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.5", "", "")
+	require.Error(t, err)
+	require.Equal(t, account.ID, repo.setErrorID)
+	require.Zero(t, repo.tempUnschedID)
 }
 
 func TestAccountTestService_OpenAIAPIKeyResponsesUsesCodexProbeHeaders(t *testing.T) {

@@ -612,16 +612,28 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					break
 				}
 
+				var respBody []byte
+				immediateRetry := false
+				if resp.StatusCode == http.StatusForbidden && account.Platform == PlatformOpenAI {
+					respBody, _ = s.readUpstreamErrorBody(resp)
+					immediateRetry = isOpenAITransientHTML403(account, resp.StatusCode, respBody)
+				}
+
 				delay := retryBackoffDelay(attempt)
+				if immediateRetry {
+					delay = 0
+				}
 				remaining := maxRetryElapsed - elapsed
 				if delay > remaining {
 					delay = remaining
 				}
-				if delay <= 0 {
+				if delay <= 0 && !immediateRetry {
 					break
 				}
 
-				respBody, _ := s.readUpstreamErrorBody(resp)
+				if respBody == nil {
+					respBody, _ = s.readUpstreamErrorBody(resp)
+				}
 				_ = resp.Body.Close()
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 					Platform:           account.Platform,
@@ -639,8 +651,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 						return ""
 					}(),
 				})
-				logger.LegacyPrintf("service.gateway", "Account %d: upstream error %d, retry %d/%d after %v (elapsed=%v/%v)",
-					account.ID, resp.StatusCode, attempt, maxRetryAttempts, delay, elapsed, maxRetryElapsed)
+				logger.LegacyPrintf("service.gateway", "Account %d: upstream error %d, retry %d/%d after %v (elapsed=%v/%v immediate=%t)",
+					account.ID, resp.StatusCode, attempt, maxRetryAttempts, delay, elapsed, maxRetryElapsed, immediateRetry)
 				if err := sleepWithContext(ctx, delay); err != nil {
 					return nil, err
 				}

@@ -123,7 +123,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		return errors.New("openai usage result is nil")
 	}
 	if s.rateLimitService != nil && input.Account != nil && input.Account.Platform == PlatformOpenAI {
-		s.rateLimitService.ResetOpenAI403Counter(ctx, input.Account.ID)
+		s.rateLimitService.RecoverOpenAI403StateAfterSuccess(ctx, input.Account)
 	}
 
 	apiKey := input.APIKey

@@ -604,20 +604,27 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			}
 		}
 
+		// HTML 403 是边缘/WAF 的临时拒绝，与账号的自定义错误码策略无关。
+		// 提前读取并重建响应体，确保重试耗尽或无需重试时后续错误处理仍能读取原文。
+		var classifiedRespBody []byte
+		immediateHTML403Retry := false
+		if resp.StatusCode == http.StatusForbidden && account.Platform == PlatformOpenAI {
+			classifiedRespBody, _ = s.readUpstreamErrorBody(resp)
+			_ = resp.Body.Close()
+			resp.Body = io.NopCloser(bytes.NewReader(classifiedRespBody))
+			immediateHTML403Retry = isOpenAITransientHTML403(account, resp.StatusCode, classifiedRespBody)
+		}
+
 		// 检查是否需要通用重试（排除400，因为400已经在上面特殊处理过了）
-		if resp.StatusCode >= 400 && resp.StatusCode != 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
+		if resp.StatusCode >= 400 && resp.StatusCode != 400 && (s.shouldRetryUpstreamError(account, resp.StatusCode) || immediateHTML403Retry) {
 			if attempt < maxRetryAttempts {
 				elapsed := time.Since(retryStart)
 				if elapsed >= maxRetryElapsed {
 					break
 				}
 
-				var respBody []byte
-				immediateRetry := false
-				if resp.StatusCode == http.StatusForbidden && account.Platform == PlatformOpenAI {
-					respBody, _ = s.readUpstreamErrorBody(resp)
-					immediateRetry = isOpenAITransientHTML403(account, resp.StatusCode, respBody)
-				}
+				respBody := classifiedRespBody
+				immediateRetry := immediateHTML403Retry
 
 				delay := retryBackoffDelay(attempt)
 				if immediateRetry {

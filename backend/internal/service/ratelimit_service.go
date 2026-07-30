@@ -829,6 +829,10 @@ func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account
 		responseBody,
 		"account may be suspended or lack permissions",
 	)
+	if strings.Contains(strings.ToLower(msg), strings.ToLower(imageGenerationPermissionMessage)) {
+		slog.Info("openai_403_local_feature_gate_skipped", "account_id", account.ID)
+		return false
+	}
 
 	if s.openAI403CounterCache == nil {
 		s.handleAuthError(ctx, account, msg)

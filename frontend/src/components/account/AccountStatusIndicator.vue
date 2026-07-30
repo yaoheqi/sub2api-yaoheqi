@@ -337,7 +337,7 @@ const statusText = computed(() => {
     return t('admin.accounts.status.quotaExceeded')
   }
   if (!props.account.schedulable) {
-    return t('admin.accounts.status.paused')
+    return t('admin.accounts.status.unschedulable')
   }
   return t(`admin.accounts.status.${props.account.status}`)
 })

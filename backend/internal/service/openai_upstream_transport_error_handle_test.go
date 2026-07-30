@@ -107,6 +107,41 @@ func TestHandleOpenAIUpstreamTransportError_TransientFailsOverWithoutEviction(t 
 	require.Equal(t, 0, rec.Body.Len())
 }
 
+func TestHandleOpenAIUpstreamTransportError_ThirdPartyAPIKeyPersistentFailureDoesNotEvict(t *testing.T) {
+	repo := &openaiTransportAccountRepoStub{}
+	svc := &OpenAIGatewayService{accountRepo: repo}
+	account := &Account{
+		ID: 100, Name: "third-party", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "sk-test", "base_url": "https://api.example.com/v1"},
+	}
+	c, rec := newOpenAITransportErrTestContext()
+
+	err := svc.handleOpenAIUpstreamTransportError(context.Background(), c, account,
+		errors.New(`Post "https://api.example.com/v1/chat/completions": connection refused`), false)
+
+	var fo *UpstreamFailoverError
+	require.True(t, errors.As(err, &fo))
+	require.Empty(t, repo.tempUnschedCalls)
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+	require.Equal(t, 0, rec.Body.Len())
+}
+
+func TestHandleOpenAIUpstreamTransportError_OfficialAPIKeyPersistentFailureStillEvicts(t *testing.T) {
+	repo := &openaiTransportAccountRepoStub{}
+	svc := &OpenAIGatewayService{accountRepo: repo}
+	account := &Account{
+		ID: 101, Name: "official", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "sk-test", "base_url": "https://api.openai.com/v1"},
+	}
+	c, _ := newOpenAITransportErrTestContext()
+
+	_ = svc.handleOpenAIUpstreamTransportError(context.Background(), c, account,
+		errors.New(`Post "https://api.openai.com/v1/responses": connection refused`), false)
+
+	require.Len(t, repo.tempUnschedCalls, 1)
+	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
+}
+
 // context.Canceled means the client disconnected — do NOT fail over to another
 // account and do NOT temporarily evict this one.
 func TestHandleOpenAIUpstreamTransportError_ContextCanceled_NoFailoverNoEviction(t *testing.T) {

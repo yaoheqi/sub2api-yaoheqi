@@ -126,7 +126,6 @@ export default {
         inactive: 'Inactive',
         error: 'Error',
         cooldown: 'Cooldown',
-        paused: 'Paused',
         limited: 'Limited',
         rateLimited: 'Rate Limited',
         overloaded: 'Overloaded',

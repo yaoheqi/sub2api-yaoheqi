@@ -39,13 +39,24 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		cfg,
 		nil,
 	)
-	accountExpirySvc := service.NewAccountExpiryService(nil, time.Second)
-	proxyExpirySvc := service.NewProxyExpiryService(nil, time.Second)
+	lifecycleManager := service.NewLifecycleManager()
+	accountExpirySvc, err := service.ProvideAccountExpiryService(nil, lifecycleManager)
+	require.NoError(t, err)
+	proxyExpirySvc, err := service.ProvideProxyExpiryService(nil, lifecycleManager)
+	require.NoError(t, err)
 	subscriptionExpirySvc := service.NewSubscriptionExpiryService(nil, time.Second)
 	pricingSvc := service.NewPricingService(cfg, nil)
 	emailQueueSvc := service.NewEmailQueueService(nil, 1)
 	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
-	idempotencyCleanupSvc := service.NewIdempotencyCleanupService(nil, cfg)
+	idempotencyCleanupSvc, err := service.ProvideIdempotencyCleanupService(nil, cfg, lifecycleManager)
+	require.NoError(t, err)
+	lifecycleRuntime, err := service.ProvideLifecycleRuntime(
+		lifecycleManager,
+		accountExpirySvc,
+		proxyExpirySvc,
+		idempotencyCleanupSvc,
+	)
+	require.NoError(t, err)
 	schedulerSnapshotSvc := service.NewSchedulerSnapshotService(nil, nil, nil, nil, cfg)
 	opsSystemLogSinkSvc := service.NewOpsSystemLogSink(nil)
 
@@ -64,11 +75,9 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		nil, // authCacheInvalidationWorker
 		schedulerSnapshotSvc,
 		tokenRefreshSvc,
-		accountExpirySvc,
-		proxyExpirySvc,
+		lifecycleRuntime,
 		subscriptionExpirySvc,
 		&service.UsageCleanupService{},
-		idempotencyCleanupSvc,
 		&service.BatchImageCleanupService{},
 		nil, // batchImageWorker
 		pricingSvc,

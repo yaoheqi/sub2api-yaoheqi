@@ -267,18 +267,28 @@ func ProvideUsageCleanupService(repo UsageCleanupRepository, timingWheel *Timing
 	return svc
 }
 
-// ProvideAccountExpiryService creates and starts AccountExpiryService.
-func ProvideAccountExpiryService(accountRepo AccountRepository) *AccountExpiryService {
+// ProvideAccountExpiryService creates and registers AccountExpiryService.
+func ProvideAccountExpiryService(accountRepo AccountRepository, lifecycle *LifecycleManager) (*AccountExpiryService, error) {
 	svc := NewAccountExpiryService(accountRepo, time.Minute)
-	svc.Start()
-	return svc
+	if err := lifecycle.Register("AccountExpiryService", func() error {
+		svc.Start()
+		return nil
+	}, svc.Stop); err != nil {
+		return nil, err
+	}
+	return svc, nil
 }
 
-// ProvideProxyExpiryService creates and starts ProxyExpiryService.
-func ProvideProxyExpiryService(proxyRepo ProxyRepository) *ProxyExpiryService {
+// ProvideProxyExpiryService creates and registers ProxyExpiryService.
+func ProvideProxyExpiryService(proxyRepo ProxyRepository, lifecycle *LifecycleManager) (*ProxyExpiryService, error) {
 	svc := NewProxyExpiryService(proxyRepo, time.Minute)
-	svc.Start()
-	return svc
+	if err := lifecycle.Register("ProxyExpiryService", func() error {
+		svc.Start()
+		return nil
+	}, svc.Stop); err != nil {
+		return nil, err
+	}
+	return svc, nil
 }
 
 // ProvideSubscriptionExpiryService creates and starts SubscriptionExpiryService.
@@ -475,10 +485,27 @@ func ProvideSystemOperationLockService(repo IdempotencyRepository, cfg *config.C
 	return NewSystemOperationLockService(repo, buildIdempotencyConfig(cfg))
 }
 
-func ProvideIdempotencyCleanupService(repo IdempotencyRepository, cfg *config.Config) *IdempotencyCleanupService {
+func ProvideIdempotencyCleanupService(repo IdempotencyRepository, cfg *config.Config, lifecycle *LifecycleManager) (*IdempotencyCleanupService, error) {
 	svc := NewIdempotencyCleanupService(repo, cfg)
-	svc.Start()
-	return svc
+	if err := lifecycle.Register("IdempotencyCleanupService", func() error {
+		svc.Start()
+		return nil
+	}, svc.Stop); err != nil {
+		return nil, err
+	}
+	return svc, nil
+}
+
+func ProvideLifecycleRuntime(
+	lifecycle *LifecycleManager,
+	_ *AccountExpiryService,
+	_ *ProxyExpiryService,
+	_ *IdempotencyCleanupService,
+) (*LifecycleRuntime, error) {
+	if err := lifecycle.Start(); err != nil {
+		return nil, err
+	}
+	return &LifecycleRuntime{manager: lifecycle}, nil
 }
 
 // ProvideScheduledTestService creates ScheduledTestService.
@@ -674,6 +701,8 @@ func ProvideAPIKeyService(
 
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
+	NewLifecycleManager,
+	ProvideLifecycleRuntime,
 	// Core services
 	NewAuthService,
 	NewPasskeyService,

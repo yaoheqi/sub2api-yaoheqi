@@ -843,12 +843,15 @@ func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account
 		responseBody,
 		"account may be suspended or lack permissions",
 	)
-	if strings.Contains(strings.ToLower(msg), strings.ToLower(imageGenerationPermissionMessage)) {
-		slog.Info("openai_403_local_feature_gate_skipped", "account_id", account.ID)
-		return false
-	}
-	if !isOpenAI403BillingFailure(responseBody, upstreamMsg) {
-		slog.Info("openai_403_account_state_skipped", "account_id", account.ID)
+	decision, _ := classifyOpenAI403(account, http.StatusForbidden, upstreamMsg, responseBody)
+	if decision.Transition == AccountTransitionNone {
+		slog.Info(
+			"openai_403_account_state_skipped",
+			"account_id", account.ID,
+			"class", decision.Class,
+			"scope", decision.Scope,
+			"retry", decision.Retry,
+		)
 		return false
 	}
 
@@ -890,23 +893,12 @@ func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account
 }
 
 func isOpenAITransientHTML403(account *Account, statusCode int, responseBody []byte) bool {
-	if account == nil || account.Platform != PlatformOpenAI || statusCode != http.StatusForbidden {
-		return false
-	}
-	body := strings.TrimSpace(strings.ToLower(string(responseBody)))
-	return strings.HasPrefix(body, "<!doctype html") ||
-		strings.HasPrefix(body, "<html") ||
-		(strings.Contains(body, "<head") && strings.Contains(body, "<body"))
+	decision, matched := classifyOpenAI403(account, statusCode, "", responseBody)
+	return matched && decision.Class == "transient_html_forbidden"
 }
 
 func isOpenAI403BillingFailure(responseBody []byte, upstreamMsg string) bool {
-	text := strings.ToLower(upstreamMsg + "\n" + string(responseBody))
-	for _, marker := range openAI403BillingMarkers {
-		if strings.Contains(text, marker) {
-			return true
-		}
-	}
-	return false
+	return containsOpenAI403BillingMarker(upstreamMsg + "\n" + string(responseBody))
 }
 
 // handleAntigravity403 处理 Antigravity 平台的 403 错误

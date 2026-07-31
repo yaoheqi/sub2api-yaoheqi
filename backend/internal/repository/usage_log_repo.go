@@ -8,11 +8,13 @@ import (
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	gocache "github.com/patrickmn/go-cache"
 )
 
 const rawUsageLogModelColumn = "model"
+const groupUsageSummaryCacheTTL = 30 * time.Second
 
 // rawUsageLogModelColumn preserves the exact stored usage_logs.model semantics for direct filters.
 // Historical rows may contain upstream/billing model values, while newer rows store requested_model.
@@ -148,6 +150,12 @@ type usageLogRepository struct {
 	bestEffortBatchOnce sync.Once
 	bestEffortBatchCh   chan usageLogBestEffortRequest
 	bestEffortRecent    *gocache.Cache
+
+	groupUsageSummaryMu       sync.Mutex
+	groupUsageSummaryDay      time.Time
+	groupUsageSummaryCachedAt time.Time
+	groupUsageSummary         []usagestats.GroupUsageSummary
+	now                       func() time.Time
 }
 
 func NewUsageLogRepository(client *dbent.Client, sqlDB *sql.DB) service.UsageLogRepository {
@@ -156,7 +164,7 @@ func NewUsageLogRepository(client *dbent.Client, sqlDB *sql.DB) service.UsageLog
 
 func newUsageLogRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor) *usageLogRepository {
 	// 使用 scanSingleRow 替代 QueryRowContext，保证 ent.Tx 作为 sqlExecutor 可用。
-	repo := &usageLogRepository{client: client, sql: sqlq}
+	repo := &usageLogRepository{client: client, sql: sqlq, now: time.Now}
 	if db, ok := sqlq.(*sql.DB); ok {
 		repo.db = db
 	}

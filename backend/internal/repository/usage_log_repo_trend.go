@@ -704,10 +704,31 @@ func (r *usageLogRepository) GetUserBreakdownStats(ctx context.Context, startTim
 
 // GetAllGroupUsageSummary returns today's and cumulative actual_cost for every group.
 // todayStart is the start-of-day in the caller's timezone (UTC-based).
-// TODO(perf): This query scans ALL usage_logs rows for total_cost aggregation.
-// When usage_logs exceeds ~1M rows, consider adding a short-lived cache (30s)
-// or a materialized view / pre-aggregation table for cumulative costs.
 func (r *usageLogRepository) GetAllGroupUsageSummary(ctx context.Context, todayStart time.Time) ([]usagestats.GroupUsageSummary, error) {
+	r.groupUsageSummaryMu.Lock()
+	defer r.groupUsageSummaryMu.Unlock()
+
+	now := time.Now()
+	if r.now != nil {
+		now = r.now()
+	}
+	if r.groupUsageSummaryDay.Equal(todayStart) &&
+		!r.groupUsageSummaryCachedAt.IsZero() &&
+		now.Sub(r.groupUsageSummaryCachedAt) < groupUsageSummaryCacheTTL {
+		return cloneGroupUsageSummaries(r.groupUsageSummary), nil
+	}
+
+	results, err := r.loadAllGroupUsageSummary(ctx, todayStart)
+	if err != nil {
+		return nil, err
+	}
+	r.groupUsageSummaryDay = todayStart
+	r.groupUsageSummaryCachedAt = now
+	r.groupUsageSummary = cloneGroupUsageSummaries(results)
+	return results, nil
+}
+
+func (r *usageLogRepository) loadAllGroupUsageSummary(ctx context.Context, todayStart time.Time) ([]usagestats.GroupUsageSummary, error) {
 	query := `
 		SELECT
 			g.id AS group_id,
@@ -735,6 +756,15 @@ func (r *usageLogRepository) GetAllGroupUsageSummary(ctx context.Context, todayS
 		return nil, err
 	}
 	return results, nil
+}
+
+func cloneGroupUsageSummaries(values []usagestats.GroupUsageSummary) []usagestats.GroupUsageSummary {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]usagestats.GroupUsageSummary, len(values))
+	copy(cloned, values)
+	return cloned
 }
 
 // resolveModelDimensionExpression maps model source type to a safe SQL expression.

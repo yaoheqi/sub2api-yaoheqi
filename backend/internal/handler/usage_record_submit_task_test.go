@@ -61,6 +61,19 @@ func TestGatewayHandlerSubmitUsageRecordTask_NilTask(t *testing.T) {
 	})
 }
 
+func TestGatewayHandlerSubmitUsageRecordTask_DroppedTaskSyncFallback(t *testing.T) {
+	pool := saturatedUsageRecordTestPool(t)
+	h := &GatewayHandler{usageRecordWorkerPool: pool.pool}
+
+	var called atomic.Bool
+	h.submitUsageRecordTask(context.Background(), func(ctx context.Context) {
+		called.Store(true)
+	})
+	close(pool.release)
+
+	require.True(t, called.Load(), "usage settlement must run synchronously when async submit is dropped")
+}
+
 func TestGatewayHandlerSubmitUsageRecordTask_WithoutPool_TaskPanicRecovered(t *testing.T) {
 	h := &GatewayHandler{}
 	var called atomic.Bool
@@ -131,36 +144,51 @@ func TestOpenAIGatewayHandlerSubmitUsageRecordTask_WithoutPool_TaskPanicRecovere
 }
 
 func TestOpenAIGatewayHandlerSubmitMandatoryUsageRecordTask_DroppedTaskSyncFallback(t *testing.T) {
-	pool := service.NewUsageRecordWorkerPoolWithOptions(service.UsageRecordWorkerPoolOptions{
-		WorkerCount:           1,
-		QueueSize:             1,
-		TaskTimeout:           time.Second,
-		OverflowPolicy:        "drop",
-		OverflowSamplePercent: 0,
-		AutoScaleEnabled:      false,
-	})
-	t.Cleanup(pool.Stop)
-	h := &OpenAIGatewayHandler{usageRecordWorkerPool: pool}
-
-	block := make(chan struct{})
-	release := make(chan struct{})
-	pool.Submit(func(ctx context.Context) {
-		close(block)
-		<-release
-	})
-	<-block
-	pool.Submit(func(ctx context.Context) {})
+	saturated := saturatedUsageRecordTestPool(t)
+	h := &OpenAIGatewayHandler{usageRecordWorkerPool: saturated.pool}
 
 	var called atomic.Bool
 	h.submitMandatoryUsageRecordTask(context.Background(), func(ctx context.Context) {
 		called.Store(true)
 	})
-	close(release)
+	close(saturated.release)
 
 	require.True(t, called.Load(), "mandatory usage task must run synchronously when async submit is dropped")
 }
 
 func TestOpenAIGatewayHandlerSubmitOpenAIUsageRecordTask_ImageResultUsesMandatoryFallback(t *testing.T) {
+	saturated := saturatedUsageRecordTestPool(t)
+	h := &OpenAIGatewayHandler{usageRecordWorkerPool: saturated.pool}
+
+	var called atomic.Bool
+	h.submitOpenAIUsageRecordTask(context.Background(), &service.OpenAIForwardResult{ImageCount: 1}, func(ctx context.Context) {
+		called.Store(true)
+	})
+	close(saturated.release)
+
+	require.True(t, called.Load(), "image usage task must be mandatory when async submit is dropped")
+}
+
+func TestOpenAIGatewayHandlerSubmitOpenAIUsageRecordTask_TokenResultUsesMandatoryFallback(t *testing.T) {
+	saturated := saturatedUsageRecordTestPool(t)
+	h := &OpenAIGatewayHandler{usageRecordWorkerPool: saturated.pool}
+
+	var called atomic.Bool
+	h.submitOpenAIUsageRecordTask(context.Background(), &service.OpenAIForwardResult{}, func(ctx context.Context) {
+		called.Store(true)
+	})
+	close(saturated.release)
+
+	require.True(t, called.Load(), "token usage task must be mandatory when async submit is dropped")
+}
+
+type saturatedUsageRecordPool struct {
+	pool    *service.UsageRecordWorkerPool
+	release chan struct{}
+}
+
+func saturatedUsageRecordTestPool(t *testing.T) saturatedUsageRecordPool {
+	t.Helper()
 	pool := service.NewUsageRecordWorkerPoolWithOptions(service.UsageRecordWorkerPoolOptions{
 		WorkerCount:           1,
 		QueueSize:             1,
@@ -170,7 +198,6 @@ func TestOpenAIGatewayHandlerSubmitOpenAIUsageRecordTask_ImageResultUsesMandator
 		AutoScaleEnabled:      false,
 	})
 	t.Cleanup(pool.Stop)
-	h := &OpenAIGatewayHandler{usageRecordWorkerPool: pool}
 
 	block := make(chan struct{})
 	release := make(chan struct{})
@@ -180,12 +207,5 @@ func TestOpenAIGatewayHandlerSubmitOpenAIUsageRecordTask_ImageResultUsesMandator
 	})
 	<-block
 	pool.Submit(func(ctx context.Context) {})
-
-	var called atomic.Bool
-	h.submitOpenAIUsageRecordTask(context.Background(), &service.OpenAIForwardResult{ImageCount: 1}, func(ctx context.Context) {
-		called.Store(true)
-	})
-	close(release)
-
-	require.True(t, called.Load(), "image usage task must be mandatory when async submit is dropped")
+	return saturatedUsageRecordPool{pool: pool, release: release}
 }

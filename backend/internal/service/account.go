@@ -176,26 +176,7 @@ func (a *Account) EffectiveLoadFactor() int {
 }
 
 func (a *Account) IsSchedulable() bool {
-	if !a.IsActive() || !a.Schedulable {
-		return false
-	}
-	now := time.Now()
-	if a.AutoPauseOnExpired && a.ExpiresAt != nil && !now.Before(*a.ExpiresAt) {
-		return false
-	}
-	if a.OverloadUntil != nil && now.Before(*a.OverloadUntil) {
-		return false
-	}
-	if a.RateLimitResetAt != nil && now.Before(*a.RateLimitResetAt) {
-		return false
-	}
-	if a.TempUnschedulableUntil != nil && now.Before(*a.TempUnschedulableUntil) {
-		return false
-	}
-	if a.IsAPIKeyOrBedrock() && a.IsQuotaExceeded() {
-		return false
-	}
-	return true
+	return ProjectAccountAvailabilityAt(a, time.Now()).Schedulable
 }
 
 // IsCredentialUsableForShadow 报告本账号(作为某 spark 影子的母账号)的凭据/传输是否可被影子透传使用。
@@ -211,17 +192,7 @@ func (a *Account) IsSchedulable() bool {
 // 手动 Schedulable 开关:spark 影子拥有独立 spark 配额窗口,母账号 global 429(走 RateLimitResetAt)
 // 不应连坐 spark(否则重新耦合影子架构本应解耦的两条 429 道)。nil receiver 返回 false。
 func (a *Account) IsCredentialUsableForShadow() bool {
-	if a == nil || !a.IsActive() {
-		return false
-	}
-	now := time.Now()
-	if a.AutoPauseOnExpired && a.ExpiresAt != nil && !now.Before(*a.ExpiresAt) {
-		return false
-	}
-	if a.TempUnschedulableUntil != nil && now.Before(*a.TempUnschedulableUntil) {
-		return false
-	}
-	return true
+	return ProjectShadowCredentialAvailabilityAt(a, time.Now()).Schedulable
 }
 
 func (a *Account) IsRateLimited() bool {

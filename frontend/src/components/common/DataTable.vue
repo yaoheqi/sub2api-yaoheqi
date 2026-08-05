@@ -539,7 +539,7 @@ const props = withDefaults(defineProps<Props>(), {
   defaultSortOrder: 'asc',
   serverSideSort: false,
   selectable: false,
-  selectedKeys: () => []
+  selectedKeys: () => [],
   cardGrid: false,
   cardColumns: () => ['groups', 'usage', 'today_stats', 'capacity']
 })

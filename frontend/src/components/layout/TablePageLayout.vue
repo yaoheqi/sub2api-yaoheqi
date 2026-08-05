@@ -1,5 +1,5 @@
 <template>
-  <div class="table-page-layout" :class="{ 'mobile-mode': isMobile }">
+  <div class="table-page-layout" :class="{ 'mobile-mode': isMobile, compact }">
     <!-- 固定区域：操作按钮 -->
     <div v-if="$slots.actions" class="layout-section-fixed">
       <slot name="actions" />
@@ -27,6 +27,8 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 
+withDefaults(defineProps<{ compact?: boolean }>(), { compact: false })
+
 const isMobile = ref(false)
 
 const checkMobile = () => {
@@ -48,6 +50,22 @@ onUnmounted(() => {
 .table-page-layout {
   @apply flex flex-col gap-6;
   height: calc(100vh - 64px - 4rem); /* 减去 header + lg:p-8 的上下padding */
+}
+
+.table-page-layout.compact {
+  @apply gap-3;
+}
+
+.table-page-layout.compact .table-scroll-container {
+  @apply rounded-lg;
+}
+
+.table-page-layout.compact .table-scroll-container :deep(th) {
+  @apply px-3 py-2 text-xs;
+}
+
+.table-page-layout.compact .table-scroll-container :deep(td) {
+  @apply px-3 py-2 text-sm;
 }
 
 .layout-section-fixed {

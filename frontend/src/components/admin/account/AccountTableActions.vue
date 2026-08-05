@@ -1,5 +1,5 @@
 <template>
-  <div class="flex flex-wrap items-center gap-3">
+  <div class="account-table-actions flex flex-wrap items-center gap-2">
     <slot name="before"></slot>
     <button @click="$emit('refresh')" :disabled="loading" class="btn btn-secondary">
       <Icon name="refresh" size="md" :class="[loading ? 'animate-spin' : '']" />
@@ -20,3 +20,11 @@ defineEmits(['refresh', 'create'])
 
 const { t } = useI18n()
 </script>
+
+<style scoped>
+.account-table-actions :deep(.btn) {
+  min-height: 2.25rem;
+  padding-top: 0.375rem;
+  padding-bottom: 0.375rem;
+}
+</style>

@@ -1,8 +1,8 @@
 <template>
   <AppLayout>
-    <TablePageLayout>
+    <TablePageLayout compact>
       <template #filters>
-        <div class="flex flex-wrap-reverse items-start justify-between gap-3">
+        <div class="flex flex-wrap items-center justify-between gap-2">
           <AccountTableFilters
             v-model:searchQuery="params.search"
             :filters="params"
@@ -203,11 +203,9 @@
           default-sort-key="name"
           default-sort-order="asc"
           :sort-storage-key="ACCOUNT_SORT_STORAGE_KEY"
-          :estimate-row-height="156"
+          :estimate-row-height="72"
           :overscan="5"
           :virtualize-threshold="50"
-          :card-grid="true"
-          :card-columns="['groups', 'usage']"
         >
           <template #header-select>
             <input
@@ -220,41 +218,6 @@
           </template>
           <template #cell-select="{ row }">
             <input type="checkbox" :checked="isSelected(row.id)" @change="toggleSel(row.id)" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
-          </template>
-          <template #card-title="{ row, value }">
-            <div class="flex min-w-0 flex-col">
-              <HelpTooltip
-                v-if="accountHomepageUrl(row)"
-                :content="accountHomepageUrl(row)"
-                width-class="w-max max-w-sm break-all"
-              >
-                <template #trigger>
-                  <a :href="accountHomepageUrl(row)" target="_blank" rel="noopener noreferrer" class="truncate border-b border-dotted border-gray-300 font-semibold text-gray-900 dark:border-dark-600 dark:text-white">{{ value }}</a>
-                </template>
-              </HelpTooltip>
-              <span v-else class="truncate font-semibold text-gray-900 dark:text-white">{{ value }}</span>
-              <span v-if="accountDisplayEmail(row)" class="truncate text-xs text-gray-500 dark:text-gray-400">{{ accountDisplayEmail(row) }}</span>
-            </div>
-          </template>
-          <template #card-select="{ row }">
-            <input type="checkbox" :checked="isSelected(row.id)" @click.stop @change="toggleSel(row.id)" class="mt-1 h-4 w-4 flex-shrink-0 rounded border-gray-300 text-primary-600 focus:ring-primary-500" :aria-label="`${t('common.select')} ${row.name}`" />
-          </template>
-          <template #card-platform="{ row }">
-            <PlatformTypeBadge :platform="row.platform" :type="row.type" :auth-mode="getOpenAIAuthMode(row)" :plan-type="getAccountPlanType(row)" :privacy-mode="row.extra?.privacy_mode || row.parent_privacy_mode" :subscription-expires-at="row.credentials?.subscription_expires_at || row.parent_subscription_expires_at" />
-          </template>
-          <template #card-status="{ row }">
-            <AccountStatusIndicator :account="row" @show-temp-unsched="handleShowTempUnsched" />
-          </template>
-          <template #card-schedulable="{ row }">
-            <button @click.stop="handleToggleSchedulable(row)" :disabled="togglingSchedulable === row.id" class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus:ring-offset-dark-800" :class="[row.schedulable ? 'bg-primary-500 hover:bg-primary-600' : 'bg-gray-200 hover:bg-gray-300 dark:bg-dark-600 dark:hover:bg-dark-500']" :title="row.schedulable ? t('admin.accounts.schedulableEnabled') : t('admin.accounts.schedulableDisabled')">
-              <span class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out" :class="[row.schedulable ? 'translate-x-4' : 'translate-x-0']" />
-            </button>
-          </template>
-          <template #card-meta="{ row }">
-            <div class="flex min-w-0 items-center gap-2 text-xs text-gray-500 dark:text-dark-400">
-              <span class="font-mono">#{{ row.id }}</span>
-              <span v-if="row.last_used_at">{{ formatRelativeTime(row.last_used_at) }}</span>
-            </div>
           </template>
           <template #cell-id="{ value }">
             <span class="font-mono text-xs text-gray-500 dark:text-gray-400">#{{ value }}</span>
@@ -666,11 +629,23 @@ const accountToolsDropdownStyle = computed(() => ({
   width: `${accountToolsDropdownPosition.width}px`
 }))
 const hiddenColumns = reactive<Set<string>>(new Set())
-const DEFAULT_HIDDEN_COLUMNS = ['today_stats', 'proxy', 'notes', 'priority', 'scheduler_score', 'rate_multiplier']
+const DEFAULT_HIDDEN_COLUMNS = [
+  'today_stats',
+  'capacity',
+  'usage',
+  'proxy',
+  'notes',
+  'priority',
+  'scheduler_score',
+  'rate_multiplier',
+  'upstream_billing_rate',
+  'created_at',
+  'expires_at'
+]
 const HIDDEN_COLUMNS_KEY = 'account-hidden-columns'
-// One-time migration: hide scheduler score for existing admins too, because showing it opt-ins to heavy backend scoring.
+// One-time migration key for saved account table column layouts.
 const HIDDEN_COLUMNS_VERSION_KEY = 'account-hidden-columns-version'
-const HIDDEN_COLUMNS_CURRENT_VERSION = 'scheduler-score-hidden-by-default'
+const HIDDEN_COLUMNS_CURRENT_VERSION = 'compact-account-list-v1'
 
 // Sorting settings
 const ACCOUNT_SORT_STORAGE_KEY = 'account-table-sort'
@@ -827,9 +802,9 @@ const loadSavedColumns = () => {
       parsed.forEach(key => {
         hiddenColumns.add(key)
       })
-      // Older saved column layouts may have scheduler_score visible; migrate them to the new safe default once.
+      // Migrate older saved layouts to the compact default once; users can re-enable detail columns afterwards.
       if (localStorage.getItem(HIDDEN_COLUMNS_VERSION_KEY) !== HIDDEN_COLUMNS_CURRENT_VERSION) {
-        hiddenColumns.add('scheduler_score')
+        DEFAULT_HIDDEN_COLUMNS.forEach(key => hiddenColumns.add(key))
         localStorage.setItem(HIDDEN_COLUMNS_KEY, JSON.stringify([...hiddenColumns]))
         localStorage.setItem(HIDDEN_COLUMNS_VERSION_KEY, HIDDEN_COLUMNS_CURRENT_VERSION)
       }

@@ -99,7 +99,61 @@
       'is-scrollable': isScrollable
     }"
   >
-    <table class="w-full min-w-max divide-y divide-gray-200 dark:divide-dark-700">
+    <template v-if="props.cardGrid">
+      <div v-if="loading" class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <div v-for="i in 6" :key="i" class="rounded-lg border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-900">
+          <div class="space-y-3">
+            <div class="h-5 w-2/3 animate-pulse rounded bg-gray-200 dark:bg-dark-700" />
+            <div class="h-4 w-1/2 animate-pulse rounded bg-gray-200 dark:bg-dark-700" />
+            <div class="h-8 w-full animate-pulse rounded bg-gray-200 dark:bg-dark-700" />
+          </div>
+        </div>
+      </div>
+      <div v-else-if="!data || data.length === 0" class="rounded-lg border border-gray-200 bg-white p-12 text-center dark:border-dark-700 dark:bg-dark-900">
+        <slot name="empty">
+          <div class="flex flex-col items-center">
+            <Icon name="inbox" size="xl" class="mb-4 h-12 w-12 text-gray-400 dark:text-dark-500" />
+            <p class="text-lg font-medium text-gray-900 dark:text-gray-100">{{ t('empty.noData') }}</p>
+          </div>
+        </slot>
+      </div>
+      <template v-else>
+        <div v-if="selectable" class="mb-3 flex items-center justify-end gap-2 px-1">
+          <label class="flex items-center gap-2 text-sm font-medium text-gray-600 dark:text-gray-300">
+            <input type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-600 dark:bg-dark-800" :checked="allVisibleSelected" :indeterminate="someVisibleSelected" data-test="select-all-grid" @change="toggleAllVisible(($event.target as HTMLInputElement).checked)" />
+            <span>{{ t('common.selectAll') }}</span>
+          </label>
+        </div>
+        <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          <article v-for="(row, index) in sortedData" :key="resolveRowKey(row, index)" class="flex min-w-0 flex-col rounded-lg border border-gray-200 bg-white p-3 shadow-sm transition-colors hover:border-primary-300 dark:border-dark-700 dark:bg-dark-900 dark:hover:border-primary-700" :class="{ 'border-primary-400 bg-primary-50/30 dark:border-primary-600 dark:bg-primary-900/10': selectable && isRowSelected(row, index) }">
+            <div class="flex min-w-0 items-start gap-2">
+              <slot name="card-select" :row="row" :value="row['select']" />
+              <div class="min-w-0 flex-1">
+                <slot name="card-title" :row="row" :value="row['name']">
+                  <div class="truncate font-semibold text-gray-900 dark:text-white">{{ row['name'] }}</div>
+                </slot>
+                <div class="mt-1 flex flex-wrap items-center gap-1.5">
+                  <slot name="card-platform" :row="row" :value="row['platform_type']" />
+                  <slot name="card-status" :row="row" :value="row['status']" />
+                </div>
+              </div>
+              <slot name="card-schedulable" :row="row" :value="row['schedulable']" />
+            </div>
+            <div class="mt-3 grid min-w-0 grid-cols-2 gap-x-3 gap-y-2 text-sm">
+              <div v-if="cardColumns.includes('groups')" class="min-w-0"><span class="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-gray-400 dark:text-dark-500">{{ columns.find(c => c.key === 'groups')?.label }}</span><slot name="cell-groups" :row="row" :value="row['groups']" /></div>
+              <div v-if="cardColumns.includes('usage')" class="min-w-0"><span class="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-gray-400 dark:text-dark-500">{{ columns.find(c => c.key === 'usage')?.label }}</span><slot name="cell-usage" :row="row" :value="row['usage']" /></div>
+              <div v-if="cardColumns.includes('today_stats')" class="min-w-0"><span class="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-gray-400 dark:text-dark-500">{{ columns.find(c => c.key === 'today_stats')?.label }}</span><slot name="cell-today_stats" :row="row" :value="row['today_stats']" /></div>
+              <div v-if="cardColumns.includes('capacity')" class="min-w-0"><span class="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-gray-400 dark:text-dark-500">{{ columns.find(c => c.key === 'capacity')?.label }}</span><slot name="cell-capacity" :row="row" :value="row['capacity']" /></div>
+            </div>
+            <div class="mt-3 flex items-center justify-between border-t border-gray-100 pt-2 dark:border-dark-700">
+              <slot name="card-meta" :row="row" />
+              <slot name="cell-actions" :row="row" :value="row['actions']" :expanded="true" />
+            </div>
+          </article>
+        </div>
+      </template>
+    </template>
+    <table v-else class="w-full min-w-max divide-y divide-gray-200 dark:divide-dark-700">
       <thead class="table-header bg-gray-50 dark:bg-dark-800">
         <tr>
           <th
@@ -471,6 +525,10 @@ interface Props {
   selectedKeys?: Array<string | number>
   /** Accessible label for a row selection checkbox. */
   selectionLabel?: string | ((row: any) => string)
+  /** Render a dense multi-column card grid on desktop. */
+  cardGrid?: boolean
+  /** Optional high-frequency fields shown in card metadata. */
+  cardColumns?: string[]
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -482,6 +540,8 @@ const props = withDefaults(defineProps<Props>(), {
   serverSideSort: false,
   selectable: false,
   selectedKeys: () => []
+  cardGrid: false,
+  cardColumns: () => ['groups', 'usage', 'today_stats', 'capacity']
 })
 
 const sortKey = ref<string>('')
@@ -635,6 +695,7 @@ const resolveStableRowKey = (row: any): string | number | undefined => {
 const resolveRowKey = (row: any, index: number) => resolveStableRowKey(row) ?? index
 
 const dataColumns = computed(() => props.columns.filter((column) => column.key !== 'actions'))
+const cardColumns = computed(() => props.cardColumns)
 const columnsSignature = computed(() =>
   props.columns.map((column) => `${column.key}:${column.sortable ? '1' : '0'}`).join('|')
 )

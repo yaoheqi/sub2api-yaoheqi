@@ -69,6 +69,38 @@ func TestUpdateServicePerformUpdateNoUpdateReturnsSentinel(t *testing.T) {
 	require.ErrorIs(t, err, ErrNoUpdateAvailable)
 }
 
+func TestUpdateServiceCustomBuildAtLatestReleaseHasNoUpdate(t *testing.T) {
+	cache := &updateServiceCacheStub{}
+	svc := NewUpdateService(
+		cache,
+		&updateServiceGitHubClientStub{
+			release: &GitHubRelease{
+				TagName: "v0.1.172",
+				Name:    "v0.1.172",
+			},
+		},
+		"0.1.172-custom",
+		"release",
+	)
+
+	info, err := svc.CheckUpdate(context.Background(), true)
+	require.NoError(t, err)
+	require.False(t, info.HasUpdate)
+	require.Equal(t, "0.1.172-custom", info.CurrentVersion)
+	require.Equal(t, "0.1.172", info.LatestVersion)
+
+	cached, err := svc.CheckUpdate(context.Background(), false)
+	require.NoError(t, err)
+	require.True(t, cached.Cached)
+	require.False(t, cached.HasUpdate)
+}
+
+func TestCompareVersionsIgnoresCustomAndBuildMetadata(t *testing.T) {
+	require.Equal(t, 0, compareVersions("v0.1.172-custom", "0.1.172"))
+	require.Equal(t, 0, compareVersions("0.1.172+build.42", "v0.1.172"))
+	require.Equal(t, -1, compareVersions("0.1.172-custom", "0.1.173"))
+}
+
 func newRollbackTestService(current string, releases []*GitHubRelease) *UpdateService {
 	return NewUpdateService(
 		&updateServiceCacheStub{},

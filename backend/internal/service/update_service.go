@@ -655,6 +655,15 @@ func compareVersions(current, latest string) int {
 
 func parseVersion(v string) [3]int {
 	v = strings.TrimPrefix(v, "v")
+	// Custom builds append prerelease/build metadata (for example,
+	// 0.1.172-custom). Update availability is based on the upstream release
+	// version, so metadata must not turn the patch component into zero.
+	if base, _, found := strings.Cut(v, "-"); found {
+		v = base
+	}
+	if base, _, found := strings.Cut(v, "+"); found {
+		v = base
+	}
 	parts := strings.Split(v, ".")
 	result := [3]int{0, 0, 0}
 	for i := 0; i < len(parts) && i < 3; i++ {

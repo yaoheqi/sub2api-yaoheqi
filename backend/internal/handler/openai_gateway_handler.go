@@ -2390,7 +2390,12 @@ func (h *OpenAIGatewayHandler) submitUsageRecordTask(parent context.Context, tas
 }
 
 func (h *OpenAIGatewayHandler) submitOpenAIUsageRecordTask(parent context.Context, result *service.OpenAIForwardResult, task service.UsageRecordTask) {
-	_ = result // All usage settlement tasks are mandatory, not only image billing.
+	// Money-critical bills never drop on pool overflow: media, search surcharge, voice.
+	if result != nil && (result.ImageCount > 0 || result.VideoCount > 0 ||
+		result.SearchCount > 0 || result.WebSearchCalls > 0 || result.AudioUsage != nil) {
+		h.submitMandatoryUsageRecordTask(parent, task)
+		return
+	}
 	h.submitUsageRecordTask(parent, task)
 }
 

@@ -221,23 +221,23 @@
                 v-if="accountHomepageUrl(row)"
                 :content="accountHomepageUrl(row)"
                 width-class="w-max max-w-sm break-all"
-                class="-ml-1 self-start"
+                class="-ml-1 max-w-full self-start"
               >
                 <template #trigger>
                   <a
                     :href="accountHomepageUrl(row)"
                     target="_blank"
                     rel="noopener noreferrer"
-                    class="block max-w-full truncate border-b border-dotted border-gray-300 font-medium text-gray-900 dark:border-dark-600 dark:text-white"
+                    class="block max-w-full whitespace-normal break-words border-b border-dotted border-gray-300 font-medium leading-5 text-gray-900 dark:border-dark-600 dark:text-white"
                   >
                     {{ value }}
                   </a>
                 </template>
               </HelpTooltip>
-              <span v-else class="block max-w-full truncate font-medium text-gray-900 dark:text-white" :title="value">{{ value }}</span>
+              <span v-else class="block max-w-full whitespace-normal break-words font-medium leading-5 text-gray-900 dark:text-white" :title="value">{{ value }}</span>
               <span
                 v-if="accountDisplayEmail(row)"
-                class="max-w-full truncate text-xs text-gray-500 dark:text-gray-400"
+                class="max-w-full whitespace-normal break-all text-xs leading-4 text-gray-500 dark:text-gray-400"
                 :title="accountDisplayEmail(row) + (row.parent_chatgpt_account_id ? ' · ' + row.parent_chatgpt_account_id : '')"
               >
                 {{ accountDisplayEmail(row) }}

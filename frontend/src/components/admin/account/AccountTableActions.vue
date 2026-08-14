@@ -1,12 +1,12 @@
 <template>
-  <div class="account-table-actions flex flex-wrap items-center gap-2">
+  <div class="account-table-actions flex flex-shrink-0 flex-nowrap items-center gap-1.5">
     <slot name="before"></slot>
-    <button @click="$emit('refresh')" :disabled="loading" class="btn btn-secondary">
-      <Icon name="refresh" size="md" :class="[loading ? 'animate-spin' : '']" />
+    <button @click="$emit('refresh')" :disabled="loading" class="btn btn-secondary h-9 w-9 justify-center px-0" :title="t('common.refresh')">
+      <Icon name="refresh" size="sm" :class="[loading ? 'animate-spin' : '']" />
     </button>
     <slot name="after"></slot>
     <slot name="beforeCreate"></slot>
-    <button @click="$emit('create')" class="btn btn-primary">{{ t('admin.accounts.createAccount') }}</button>
+    <button @click="$emit('create')" class="btn btn-primary h-9 whitespace-nowrap px-3 text-sm">{{ t('admin.accounts.createAccount') }}</button>
     <slot name="afterCreate"></slot>
   </div>
 </template>

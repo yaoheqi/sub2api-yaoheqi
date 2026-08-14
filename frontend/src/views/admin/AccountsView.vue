@@ -2,7 +2,7 @@
   <AppLayout>
     <TablePageLayout compact>
       <template #filters>
-        <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="flex min-w-0 flex-nowrap items-center gap-2 overflow-x-auto">
           <AccountTableFilters
             v-model:searchQuery="params.search"
             :filters="params"
@@ -24,17 +24,11 @@
                     showAutoRefreshDropdown = !showAutoRefreshDropdown;
                     showAccountToolsDropdown = false
                   "
-                  class="btn btn-secondary px-2 md:px-3"
+                  class="btn btn-secondary h-9 w-9 justify-center px-0"
                   :title="t('admin.accounts.autoRefresh')"
+                  :aria-label="t('admin.accounts.autoRefresh')"
                 >
                   <Icon name="refresh" size="sm" :class="[autoRefreshEnabled ? 'animate-spin' : '']" />
-                  <span class="hidden md:inline">
-                    {{
-                      autoRefreshEnabled
-                        ? t('admin.accounts.autoRefreshCountdown', { seconds: autoRefreshCountdown })
-                        : t('admin.accounts.autoRefresh')
-                    }}
-                  </span>
                 </button>
                 <div
                   v-if="showAutoRefreshDropdown"
@@ -67,13 +61,12 @@
                 <button
                   ref="accountToolsTriggerRef"
                   @click="toggleAccountToolsDropdown"
-                  class="btn btn-secondary px-2 md:px-3"
+                  class="btn btn-secondary h-9 w-9 justify-center px-0"
                   :title="t('admin.accounts.moreActions')"
+                  :aria-label="t('admin.accounts.moreActions')"
                   :aria-expanded="showAccountToolsDropdown"
                 >
-                  <Icon name="more" size="sm" class="md:mr-1.5" />
-                  <span class="hidden md:inline">{{ t('admin.accounts.moreActions') }}</span>
-                  <Icon name="chevronDown" size="xs" class="ml-1 hidden md:inline" />
+                  <Icon name="more" size="sm" />
                 </button>
                 <Teleport to="body">
                   <div
@@ -191,7 +184,7 @@
           @select-all-results="handleSelectAllResults"
           @toggle-schedulable="handleBulkToggleSchedulable"
         />
-        <div ref="accountTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div ref="accountTableRef" class="account-table-compact flex min-h-0 flex-1 flex-col overflow-hidden">
         <DataTable
           ref="dataTableRef"
           :columns="cols"
@@ -203,7 +196,7 @@
           default-sort-key="name"
           default-sort-order="asc"
           :sort-storage-key="ACCOUNT_SORT_STORAGE_KEY"
-          :estimate-row-height="72"
+          :estimate-row-height="56"
           :overscan="5"
           :virtualize-threshold="50"
         >
@@ -223,7 +216,7 @@
             <span class="font-mono text-xs text-gray-500 dark:text-gray-400">#{{ value }}</span>
           </template>
           <template #cell-name="{ row, value }">
-            <div class="flex flex-col">
+            <div class="flex w-full min-w-0 max-w-[240px] flex-col">
               <HelpTooltip
                 v-if="accountHomepageUrl(row)"
                 :content="accountHomepageUrl(row)"
@@ -235,16 +228,16 @@
                     :href="accountHomepageUrl(row)"
                     target="_blank"
                     rel="noopener noreferrer"
-                    class="border-b border-dotted border-gray-300 font-medium text-gray-900 dark:border-dark-600 dark:text-white"
+                    class="block max-w-full truncate border-b border-dotted border-gray-300 font-medium text-gray-900 dark:border-dark-600 dark:text-white"
                   >
                     {{ value }}
                   </a>
                 </template>
               </HelpTooltip>
-              <span v-else class="font-medium text-gray-900 dark:text-white">{{ value }}</span>
+              <span v-else class="block max-w-full truncate font-medium text-gray-900 dark:text-white" :title="value">{{ value }}</span>
               <span
                 v-if="accountDisplayEmail(row)"
-                class="text-xs text-gray-500 dark:text-gray-400 truncate max-w-[200px]"
+                class="max-w-full truncate text-xs text-gray-500 dark:text-gray-400"
                 :title="accountDisplayEmail(row) + (row.parent_chatgpt_account_id ? ' · ' + row.parent_chatgpt_account_id : '')"
               >
                 {{ accountDisplayEmail(row) }}
@@ -256,8 +249,8 @@
             <span v-else class="text-sm text-gray-400 dark:text-dark-500">-</span>
           </template>
           <template #cell-platform_type="{ row }">
-            <div class="flex min-w-0 flex-col gap-1">
-              <div class="flex flex-wrap items-center gap-1">
+            <div class="flex min-w-0 flex-col gap-0.5">
+              <div class="flex flex-wrap items-center gap-0.5">
                 <PlatformTypeBadge :platform="row.platform" :type="row.type"
                   :auth-mode="getOpenAIAuthMode(row)"
                   :plan-type="getAccountPlanType(row)"
@@ -430,18 +423,15 @@
             </div>
           </template>
           <template #cell-actions="{ row }">
-            <div class="flex items-center gap-1">
-              <button @click="handleEdit(row)" class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 dark:hover:bg-dark-700 dark:hover:text-primary-400">
-                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" /></svg>
-                <span class="text-xs">{{ t('common.edit') }}</span>
+            <div class="flex items-center gap-0.5">
+              <button @click="handleEdit(row)" class="account-row-action" :title="t('common.edit')" :aria-label="t('common.edit')">
+                <Icon name="edit" size="sm" />
               </button>
-              <button @click="handleDelete(row)" class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400">
-                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>
-                <span class="text-xs">{{ t('common.delete') }}</span>
+              <button @click="handleDelete(row)" class="account-row-action account-row-action-danger" :title="t('common.delete')" :aria-label="t('common.delete')">
+                <Icon name="trash" size="sm" />
               </button>
-              <button @click="openMenu(row, $event)" class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:hover:bg-dark-700 dark:hover:text-white">
-                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM12.75 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM18.75 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0z" /></svg>
-                <span class="text-xs">{{ t('common.more') }}</span>
+              <button @click="openMenu(row, $event)" class="account-row-action" :title="t('common.more')" :aria-label="t('common.more')">
+                <Icon name="more" size="sm" />
               </button>
             </div>
           </template>
@@ -1702,7 +1692,7 @@ function getAntigravityTierClass(row: any): string {
 const allColumns = computed(() => {
   const c = [
     { key: 'select', label: '', sortable: false },
-    { key: 'name', label: t('admin.accounts.columns.name'), sortable: true },
+    { key: 'name', label: t('admin.accounts.columns.name'), sortable: true, class: 'w-[240px] min-w-[240px] max-w-[240px]' },
     { key: 'id', label: t('admin.accounts.columns.id'), sortable: true },
     { key: 'platform_type', label: t('admin.accounts.columns.platformType'), sortable: false },
     { key: 'capacity', label: t('admin.accounts.columns.capacity'), sortable: false },
@@ -1802,6 +1792,15 @@ const handleBulkDelete = async () => {
   if (!confirm(t('admin.accounts.bulkActions.confirmDelete', { count: accountIds.length }))) return
   try {
     const result = await adminAPI.accounts.batchDelete(accountIds)
+    const successIds = result.success_ids
+      ?? (result.failed_ids?.length
+        ? accountIds.filter(id => !result.failed_ids!.includes(id))
+        : result.failed === 0 ? accountIds : [])
+    if (successIds.length > 0) {
+      removeAccountsFromList(successIds, result.success)
+    } else if (result.success > 0) {
+      hasPendingListSync.value = true
+    }
     if (result.failed > 0) {
       appStore.showError(t('admin.accounts.bulkActions.partialSuccess', {
         success: result.success,
@@ -1812,39 +1811,45 @@ const handleBulkDelete = async () => {
       appStore.showSuccess(t('admin.accounts.bulkActions.deleteSuccess', { count: result.success }))
       clearSelection()
     }
-    await reload()
+    enterAutoRefreshSilentWindow()
   } catch (error) {
     console.error('Failed to bulk delete accounts:', error)
     appStore.showError(String(error))
   }
 }
 const handleBulkResetStatus = async () => {
+  const accountIds = [...selIds.value]
   if (!confirm(t('common.confirm'))) return
   try {
-    const result = await adminAPI.accounts.batchClearError(selIds.value)
+    const result = await adminAPI.accounts.batchClearError(accountIds)
     if (result.failed > 0) {
       appStore.showError(t('admin.accounts.bulkActions.partialSuccess', { success: result.success, failed: result.failed }))
     } else {
       appStore.showSuccess(t('admin.accounts.bulkActions.resetStatusSuccess', { count: result.success }))
       clearSelection()
     }
-    reload()
+    const successIds = result.success_ids ?? (result.failed === 0 ? accountIds : [])
+    await refreshAccountsByIds(successIds)
+    enterAutoRefreshSilentWindow()
   } catch (error) {
     console.error('Failed to bulk reset status:', error)
     appStore.showError(String(error))
   }
 }
 const handleBulkRefreshToken = async () => {
+  const accountIds = [...selIds.value]
   if (!confirm(t('common.confirm'))) return
   try {
-    const result = await adminAPI.accounts.batchRefresh(selIds.value)
+    const result = await adminAPI.accounts.batchRefresh(accountIds)
     if (result.failed > 0) {
       appStore.showError(t('admin.accounts.bulkActions.partialSuccess', { success: result.success, failed: result.failed }))
     } else {
       appStore.showSuccess(t('admin.accounts.bulkActions.refreshTokenSuccess', { count: result.success }))
       clearSelection()
     }
-    reload()
+    const successIds = result.success_ids ?? (result.failed === 0 ? accountIds : [])
+    await refreshAccountsByIds(successIds)
+    enterAutoRefreshSilentWindow()
   } catch (error) {
     console.error('Failed to bulk refresh token:', error)
     appStore.showError(String(error))
@@ -1870,7 +1875,7 @@ const handleBulkProbeUpstreamBilling = async () => {
         patched = true
       }
     })
-    if (patched) await refreshAccountsAfterUpstreamBillingProbe()
+    if (patched) enterAutoRefreshSilentWindow()
     const failed = results.filter(result => result.error).length
     if (failed > 0) {
       appStore.showError(t('admin.accounts.upstreamBilling.batchPartial', { success: results.length - failed, failed }))
@@ -2057,11 +2062,15 @@ const openBulkEditFiltered = async () => {
   showBulkEdit.value = true
 }
 
-const handleBulkUpdated = () => {
+const handleBulkUpdated = async () => {
   showBulkEdit.value = false
+  const visibleTargetIds = bulkEditTarget.value?.mode === 'selected'
+    ? bulkEditTarget.value.accountIds.filter(id => accounts.value.some(account => account.id === id))
+    : accounts.value.map(account => account.id)
   bulkEditTarget.value = null
   clearSelection()
-  reload()
+  await refreshAccountsByIds(visibleTargetIds)
+  enterAutoRefreshSilentWindow()
 }
 const handleDataImported = () => { showImportData.value = false; reload() }
 const ACCOUNT_UNGROUPED_GROUP_QUERY_VALUE = 'ungrouped'
@@ -2126,8 +2135,8 @@ const mergeRuntimeFields = (oldAccount: Account, updatedAccount: Account): Accou
   active_sessions: updatedAccount.active_sessions ?? oldAccount.active_sessions
 })
 
-const syncPaginationAfterLocalRemoval = () => {
-  const nextTotal = Math.max(0, pagination.total - 1)
+const syncPaginationAfterLocalRemoval = (removedCount = 1) => {
+  const nextTotal = Math.max(0, pagination.total - removedCount)
   pagination.total = nextTotal
   pagination.pages = nextTotal > 0 ? Math.ceil(nextTotal / pagination.page_size) : 0
 
@@ -2138,6 +2147,18 @@ const syncPaginationAfterLocalRemoval = () => {
   }
   // 行被本地移除后不立刻全量补页，改为提示用户手动同步。
   hasPendingListSync.value = nextTotal > 0
+}
+
+const removeAccountsFromList = (accountIds: number[], totalRemoved = accountIds.length) => {
+  if (accountIds.length === 0 || totalRemoved <= 0) return
+  const idSet = new Set(accountIds)
+  accounts.value = accounts.value.filter(account => !idSet.has(account.id))
+  removeSelectedAccounts(accountIds)
+  syncPaginationAfterLocalRemoval(totalRemoved)
+  if (menu.acc && idSet.has(menu.acc.id)) {
+    menu.show = false
+    menu.acc = null
+  }
 }
 
 const patchAccountInList = (updatedAccount: Account) => {
@@ -2159,22 +2180,26 @@ const patchAccountInList = (updatedAccount: Account) => {
   accounts.value = nextAccounts
   syncAccountRefs(mergedAccount)
 }
+
+const refreshAccountsByIds = async (accountIds: number[]) => {
+  const visibleIds = Array.from(new Set(accountIds)).filter(id => accounts.value.some(account => account.id === id))
+  if (visibleIds.length === 0) return
+  const results = await Promise.allSettled(visibleIds.map(id => adminAPI.accounts.getById(id)))
+  results.forEach(result => {
+    if (result.status === 'fulfilled') patchAccountInList(result.value)
+  })
+}
 const patchUpstreamBillingSnapshot = (accountID: number, snapshot: UpstreamBillingProbeSnapshot) => {
   const account = accounts.value.find(item => item.id === accountID)
   if (!account) return
   markUpstreamBillingSortRefresh()
   upstreamBillingNow.value = Date.now()
+  const syncedRate = snapshot.synced_rate_multiplier ?? snapshot.data?.effective_rate_multiplier
   patchAccountInList({
     ...account,
+    ...(snapshot.status === 'ok' && typeof syncedRate === 'number' ? { rate_multiplier: syncedRate } : {}),
     extra: { ...account.extra, upstream_billing_probe: snapshot }
   })
-}
-const refreshAccountsAfterUpstreamBillingProbe = async () => {
-  try {
-    await load()
-  } catch (error) {
-    console.error('Failed to refresh accounts after upstream billing probe:', error)
-  }
 }
 const handleProbeUpstreamBilling = async (account: Account) => {
   if (probingUpstreamBilling.has(account.id)) return
@@ -2183,7 +2208,7 @@ const handleProbeUpstreamBilling = async (account: Account) => {
     const result = await adminAPI.accounts.probeUpstreamBilling(account.id)
     if (result.snapshot) {
       patchUpstreamBillingSnapshot(account.id, result.snapshot)
-      await refreshAccountsAfterUpstreamBillingProbe()
+      enterAutoRefreshSilentWindow()
     }
   } catch (error) {
     console.error('Failed to probe upstream billing:', error)
@@ -2381,7 +2406,19 @@ const confirmCreateSparkShadow = async () => {
   }
 }
 const handleDelete = (a: Account) => { deletingAcc.value = a; showDeleteDialog.value = true }
-const confirmDelete = async () => { if(!deletingAcc.value) return; try { await adminAPI.accounts.delete(deletingAcc.value.id); showDeleteDialog.value = false; deletingAcc.value = null; reload() } catch (error) { console.error('Failed to delete account:', error) } }
+const confirmDelete = async () => {
+  if (!deletingAcc.value) return
+  const accountId = deletingAcc.value.id
+  try {
+    await adminAPI.accounts.delete(accountId)
+    showDeleteDialog.value = false
+    deletingAcc.value = null
+    removeAccountsFromList([accountId])
+    enterAutoRefreshSilentWindow()
+  } catch (error) {
+    console.error('Failed to delete account:', error)
+  }
+}
 const handleToggleSchedulable = async (a: Account) => {
   const nextSchedulable = !a.schedulable
   togglingSchedulable.value = a.id
@@ -2514,5 +2551,28 @@ onUnmounted(() => {
 
 .account-tools-menu-icon {
   @apply inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md;
+}
+
+.account-row-action {
+  @apply inline-flex h-7 w-7 items-center justify-center rounded text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 dark:hover:bg-dark-700 dark:hover:text-primary-400;
+}
+
+.account-row-action-danger {
+  @apply hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400;
+}
+
+.account-table-compact :deep(.table-header th) {
+  padding-top: 0.5rem !important;
+  padding-bottom: 0.5rem !important;
+}
+
+.account-table-compact :deep(.table-body td) {
+  padding-top: 0.375rem !important;
+  padding-bottom: 0.375rem !important;
+  line-height: 1rem;
+}
+
+.account-table-compact :deep(.table-body tr) {
+  height: 3.5rem;
 }
 </style>

@@ -314,6 +314,30 @@ func TestCodexQuotaOverdraftFailedStateDoesNotClearRateLimit(t *testing.T) {
 	require.Zero(t, blocker.clearCalls)
 }
 
+func TestCodexQuotaOverdraftPassedStateClearsStaleRateLimitDuringObserve(t *testing.T) {
+	now := time.Date(2026, time.August, 14, 10, 0, 0, 0, time.UTC)
+	account := newCodexOverdraftProbeTestAccount(now)
+	signal, exhausted := codexQuotaOverdraftSignalFromAccount(account, nil, now)
+	require.True(t, exhausted)
+	account.RateLimitResetAt = codexQuotaOverdraftTimePtr(now.Add(2 * time.Hour))
+	account.Extra[CodexQuotaOverdraftProbeExtraKey] = &CodexQuotaOverdraftProbeState{
+		Status:           codexQuotaOverdraftProbePassed,
+		QuotaWindow:      signal.Window,
+		CycleKey:         signal.CycleKey,
+		RecoverAt:        codexQuotaOverdraftTimePtr(signal.RecoverAt),
+		FiveHourRecoverAt: cloneTimePtr(signal.FiveHourRecoverAt),
+	}
+	repo := &codexOverdraftProbeRepoStub{account: account}
+	blocker := &codexOverdraftRuntimeBlockerStub{}
+	coordinator := &CodexQuotaOverdraftCoordinator{accountRepo: repo, runtimeBlocker: blocker, now: func() time.Time { return now }}
+
+	coordinator.observeAccount(account, "gpt-5.4")
+
+	require.Equal(t, 1, repo.clearLimitCalls)
+	require.Nil(t, account.RateLimitResetAt)
+	require.Equal(t, 1, blocker.clearCalls)
+}
+
 func TestClassifyCodexQuotaOverdraftProbeResponses(t *testing.T) {
 	status, reason := classifyCodexQuotaOverdraftProbe(http.StatusOK, nil, []byte(`data: {"type":"response.completed"}`))
 	require.Equal(t, "available", status)

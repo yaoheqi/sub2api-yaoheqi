@@ -166,8 +166,7 @@ func (c *CodexQuotaOverdraftCoordinator) HandleQuota429(
 	body []byte,
 	preferredModel string,
 ) bool {
-	if !c.enabled() || !isCodexQuotaOverdraftAccount(account) || account.ID <= 0 ||
-		!codexQuotaOverdraftResponseIsQuotaLimited(headers, body) {
+	if !c.enabled() || !isCodexQuotaOverdraftAccount(account) || account.ID <= 0 {
 		return false
 	}
 
@@ -180,6 +179,22 @@ func (c *CodexQuotaOverdraftCoordinator) HandleQuota429(
 		cancel()
 	}
 	state, _ := codexQuotaOverdraftStateFromAccount(accountCopy)
+	knownOverdraft := false
+	if state != nil && state.Status == codexQuotaOverdraftProbePassed {
+		_, knownOverdraft = codexQuotaOverdraftSignalFromAccount(accountCopy, state, c.currentTime())
+	}
+	responseQuotaLimited := codexQuotaOverdraftResponseIsQuotaLimited(headers, body)
+	// A passed probe plus a still-exhausted persisted window is authoritative
+	// enough to absorb quota 429s whose response omitted Codex quota headers.
+	// Without this fallback, the generic 429 handler keeps rewriting the
+	// account cooldown and the scheduler appears stuck in a stale state.
+	if !responseQuotaLimited && !knownOverdraft {
+		return false
+	}
+	if !responseQuotaLimited {
+		c.clearQuotaPause(account.ID, state)
+		return true
+	}
 	signal, exhausted := codexQuotaOverdraftSignalFromAccount(accountCopy, state, c.currentTime())
 	if !exhausted {
 		signal = codexQuotaOverdraftFallbackSignal(headers, body, state, c.currentTime())
@@ -199,6 +214,7 @@ func (c *CodexQuotaOverdraftCoordinator) startProbe(account *Account, signal cod
 	if hasCurrent && codexQuotaOverdraftStateCoversSignal(current, signal) {
 		switch current.Status {
 		case codexQuotaOverdraftProbePassed:
+			c.clearQuotaPause(account.ID, current)
 			return
 		case codexQuotaOverdraftProbeFailed:
 			c.ensureFailedPause(account, current)

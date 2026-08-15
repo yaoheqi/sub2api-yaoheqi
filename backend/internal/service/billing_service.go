@@ -317,6 +317,8 @@ func (s *BillingService) initFallbackPricing() {
 		LongContextInputMultiplier:         openAIGPT54LongContextInputMultiplier,
 		LongContextOutputMultiplier:        openAIGPT54LongContextOutputMultiplier,
 	}
+	// WM 使用 Sol 的计价规则；它是同一上游路由的隐藏别名。
+	s.fallbackPrices["gpt-5.6-sol-wm"] = s.fallbackPrices["gpt-5.6-sol"]
 	s.fallbackPrices["gpt-5.6-terra"] = &ModelPricing{
 		InputPricePerToken:                 2e-6,
 		InputPricePerTokenPriority:         4e-6,
@@ -805,7 +807,7 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	// OpenAI（GPT-5 / Codex 族）：仅匹配已知型号，避免未知 OpenAI 型号误计价。
 	if normalized := normalizeKnownOpenAICodexModel(modelLower); normalized != "" {
 		switch normalized {
-		case "gpt-5.6-sol":
+		case "gpt-5.6-sol", "gpt-5.6-sol-wm":
 			return s.fallbackPrices["gpt-5.6-sol"]
 		case "gpt-5.6-terra":
 			return s.fallbackPrices["gpt-5.6-terra"]

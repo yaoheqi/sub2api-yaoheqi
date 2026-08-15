@@ -568,7 +568,20 @@ func TestFetchCodexModelsManifestOAuthPreservesResponsesLite(t *testing.T) {
 	s := &OpenAIGatewayService{}
 	manifest, err := s.FetchCodexModelsManifest(context.Background(), newCodexModelsTestAccount(), "0.145.0", "")
 	require.NoError(t, err)
-	require.Equal(t, manifestBody, string(manifest.Body))
+	require.Contains(t, string(manifest.Body), `"slug":"gpt-5.6-sol-wm"`)
+	require.Contains(t, string(manifest.Body), `"use_responses_lite":true`)
+}
+
+func TestEnsureCodexWMModelIsIdempotent(t *testing.T) {
+	body := []byte(`{"models":[{"slug":"gpt-5.6-sol"}],"metadata":{"version":1}}`)
+	updated, changed, err := ensureCodexWMModel(body)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Contains(t, string(updated), `"slug":"gpt-5.6-sol-wm"`)
+	again, changedAgain, err := ensureCodexWMModel(updated)
+	require.NoError(t, err)
+	require.False(t, changedAgain)
+	require.Equal(t, string(updated), string(again))
 }
 
 func TestConvertOpenAIModelListToCodexManifest(t *testing.T) {

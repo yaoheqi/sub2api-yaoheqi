@@ -801,13 +801,9 @@ func isOpenAICodexSnapshotStale(account *Account, now time.Time) bool {
 	if account == nil || !account.IsOpenAIOAuth() {
 		return false
 	}
-	// 普通账号的 codex 刷新走 probe(/responses 头),要求 WSv2;但 spark 影子走 QueryUsage
-	// (/wham/usage body 的 codex_bengalfox),与 WSv2 无关——不能用 WSv2 门控其 staleness,否则首刷后
-	// codex_5h/7d 已存在→staleness 恒 false→spark 窗口永久冻结(外审第9轮 P1)。影子改按
-	// codex_usage_updated_at TTL 判定;实际查询频率仍由 shouldProbeOpenAICodexSnapshot 的缓存 TTL 节流。
-	if !account.IsShadow() && !account.IsOpenAIResponsesWebSocketV2Enabled() {
-		return false
-	}
+	// 普通 OAuth 账号和 Spark 影子账号都按 codex_usage_updated_at TTL 刷新。
+	// 普通账号的 HTTP probe 不依赖 WSv2；此前这里错误地把普通账号门控在
+	// WSv2 开关下，导致缓存过期后 5h/7d 和 overdraft 状态长期不更新。
 	if account.Extra == nil {
 		return true
 	}

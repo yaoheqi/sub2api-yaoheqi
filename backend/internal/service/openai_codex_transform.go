@@ -12,6 +12,7 @@ import (
 
 var codexModelMap = map[string]string{
 	"gpt-5.6-sol":          "gpt-5.6-sol",
+	"gpt-5.6-sol-wm":       "gpt-5.6-sol-wm",
 	"gpt-5.6-terra":        "gpt-5.6-terra",
 	"gpt-5.6-luna":         "gpt-5.6-luna",
 	"gpt-5.5":              "gpt-5.5",
@@ -59,6 +60,7 @@ var codexVersionModelPrefixes = []struct {
 	prefix string
 	target string
 }{
+	{prefix: "gpt-5.6-sol-wm", target: "gpt-5.6-sol-wm"},
 	{prefix: "gpt-5.6-sol", target: "gpt-5.6-sol"},
 	{prefix: "gpt-5.6-terra", target: "gpt-5.6-terra"},
 	{prefix: "gpt-5.6-luna", target: "gpt-5.6-luna"},

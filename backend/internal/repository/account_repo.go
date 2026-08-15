@@ -2722,7 +2722,8 @@ func (r *accountRepository) ClaimCodexQuotaOverdraftProbe(
 			jsonb_set(
 				jsonb_set($2::jsonb, '{version}', to_jsonb(COALESCE(NULLIF(extra #>> '{codex_quota_overdraft_probe,version}', '')::bigint, 0) + 1), true),
 				'{updated_at}', to_jsonb(NOW()), true
-			),
+			)
+		),
 			updated_at = NOW()
 		WHERE id = $3
 			AND deleted_at IS NULL

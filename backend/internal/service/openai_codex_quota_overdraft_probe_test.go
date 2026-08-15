@@ -24,9 +24,14 @@ type codexOverdraftProbeRepoStub struct {
 
 type codexOverdraftRuntimeBlockerStub struct {
 	clearCalls int
+	blockCalls int
+	blockUntil time.Time
 }
 
-func (b *codexOverdraftRuntimeBlockerStub) BlockAccountScheduling(*Account, time.Time, string) {}
+func (b *codexOverdraftRuntimeBlockerStub) BlockAccountScheduling(_ *Account, until time.Time, _ string) {
+	b.blockCalls++
+	b.blockUntil = until
+}
 
 func (b *codexOverdraftRuntimeBlockerStub) ClearAccountSchedulingBlock(int64) {
 	b.clearCalls++
@@ -321,10 +326,10 @@ func TestCodexQuotaOverdraftPassedStateClearsStaleRateLimitDuringObserve(t *test
 	require.True(t, exhausted)
 	account.RateLimitResetAt = codexQuotaOverdraftTimePtr(now.Add(2 * time.Hour))
 	account.Extra[CodexQuotaOverdraftProbeExtraKey] = &CodexQuotaOverdraftProbeState{
-		Status:           codexQuotaOverdraftProbePassed,
-		QuotaWindow:      signal.Window,
-		CycleKey:         signal.CycleKey,
-		RecoverAt:        codexQuotaOverdraftTimePtr(signal.RecoverAt),
+		Status:            codexQuotaOverdraftProbePassed,
+		QuotaWindow:       signal.Window,
+		CycleKey:          signal.CycleKey,
+		RecoverAt:         codexQuotaOverdraftTimePtr(signal.RecoverAt),
 		FiveHourRecoverAt: cloneTimePtr(signal.FiveHourRecoverAt),
 	}
 	repo := &codexOverdraftProbeRepoStub{account: account}
@@ -336,6 +341,28 @@ func TestCodexQuotaOverdraftPassedStateClearsStaleRateLimitDuringObserve(t *test
 	require.Equal(t, 1, repo.clearLimitCalls)
 	require.Nil(t, account.RateLimitResetAt)
 	require.Equal(t, 1, blocker.clearCalls)
+}
+
+func TestCodexQuotaOverdraftQuota429TemporarilyBlocksScheduling(t *testing.T) {
+	now := time.Date(2026, time.August, 14, 10, 0, 0, 0, time.UTC)
+	account := newCodexOverdraftProbeTestAccount(now)
+	signal, exhausted := codexQuotaOverdraftSignalFromAccount(account, nil, now)
+	require.True(t, exhausted)
+	repo := &codexOverdraftProbeRepoStub{account: account}
+	blocker := &codexOverdraftRuntimeBlockerStub{}
+	coordinator := &CodexQuotaOverdraftCoordinator{
+		accountRepo:    repo,
+		runtimeBlocker: blocker,
+		now:            func() time.Time { return now },
+	}
+
+	coordinator.pauseForQuota429(account, signal)
+
+	require.Equal(t, 1, repo.tempPauseCalls)
+	require.True(t, account.TempUnschedulableUntil.Equal(signal.RecoverAt))
+	require.True(t, codexQuotaOverdraftPauseReason(account.TempUnschedulableReason))
+	require.Equal(t, 1, blocker.blockCalls)
+	require.Equal(t, signal.RecoverAt, blocker.blockUntil)
 }
 
 func TestClassifyCodexQuotaOverdraftProbeResponses(t *testing.T) {

@@ -154,7 +154,7 @@ func (c *CodexQuotaOverdraftCoordinator) observeAccount(account *Account, prefer
 		c.recoverCycle(account, state, now)
 		return
 	}
-	c.startProbe(account, signal, preferredModel)
+	c.startProbe(account, signal, preferredModel, false)
 }
 
 // HandleQuota429 intercepts only definite subscription-quota 429s. Ordinary
@@ -192,7 +192,14 @@ func (c *CodexQuotaOverdraftCoordinator) HandleQuota429(
 		return false
 	}
 	if !responseQuotaLimited {
-		c.clearQuotaPause(account.ID, state)
+		// A known exhausted window with an unlabelled 429 is still a real
+		// quota failure. Keep the account out of scheduling while the probe
+		// retries instead of letting the generic 429 path mark it healthy.
+		signal, exhausted := codexQuotaOverdraftSignalFromAccount(accountCopy, state, c.currentTime())
+		if exhausted {
+			c.pauseForQuota429(accountCopy, signal)
+			c.startProbe(accountCopy, signal, preferredModel, true)
+		}
 		return true
 	}
 	signal, exhausted := codexQuotaOverdraftSignalFromAccount(accountCopy, state, c.currentTime())
@@ -202,11 +209,12 @@ func (c *CodexQuotaOverdraftCoordinator) HandleQuota429(
 	if signal.CycleKey == "" {
 		return false
 	}
-	c.startProbe(accountCopy, signal, preferredModel)
+	c.pauseForQuota429(accountCopy, signal)
+	c.startProbe(accountCopy, signal, preferredModel, true)
 	return true
 }
 
-func (c *CodexQuotaOverdraftCoordinator) startProbe(account *Account, signal codexQuotaOverdraftSignal, preferredModel string) {
+func (c *CodexQuotaOverdraftCoordinator) startProbe(account *Account, signal codexQuotaOverdraftSignal, preferredModel string, retryPassed bool) {
 	if account == nil || signal.CycleKey == "" {
 		return
 	}
@@ -214,8 +222,12 @@ func (c *CodexQuotaOverdraftCoordinator) startProbe(account *Account, signal cod
 	if hasCurrent && codexQuotaOverdraftStateCoversSignal(current, signal) {
 		switch current.Status {
 		case codexQuotaOverdraftProbePassed:
-			c.clearQuotaPause(account.ID, current)
-			return
+			if !retryPassed {
+				c.clearQuotaPause(account.ID, current)
+				return
+			}
+			// A later quota 429 in the same exhausted window invalidates the
+			// earlier pass. Re-enter the bounded probe before resuming traffic.
 		case codexQuotaOverdraftProbeFailed:
 			c.ensureFailedPause(account, current)
 			return
@@ -535,6 +547,30 @@ func (c *CodexQuotaOverdraftCoordinator) ensureFailedPause(account *Account, sta
 	}
 	if c.runtimeBlocker != nil {
 		c.runtimeBlocker.BlockAccountScheduling(account, *state.RecoverAt, codexQuotaOverdraftPauseSource)
+	}
+}
+
+func (c *CodexQuotaOverdraftCoordinator) pauseForQuota429(account *Account, signal codexQuotaOverdraftSignal) {
+	if account == nil || signal.RecoverAt.IsZero() || !signal.RecoverAt.After(c.currentTime()) {
+		return
+	}
+	reason := BuildTempUnschedReasonPayload(codexQuotaOverdraftPauseSource, "quota 429 while overdraft probe is active")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.accountRepo.SetTempUnschedulable(ctx, account.ID, signal.RecoverAt, reason); err != nil {
+		slog.Warn("codex_quota_overdraft_quota_429_pause_failed", "account_id", account.ID, "error", err)
+		return
+	}
+	if c.tempUnschedCache != nil {
+		_ = c.tempUnschedCache.SetTempUnsched(ctx, account.ID, &TempUnschedState{
+			UntilUnix:       signal.RecoverAt.Unix(),
+			TriggeredAtUnix: c.currentTime().Unix(),
+			StatusCode:      http.StatusTooManyRequests,
+			ErrorMessage:    "quota 429 while overdraft probe is active",
+		})
+	}
+	if c.runtimeBlocker != nil {
+		c.runtimeBlocker.BlockAccountScheduling(account, signal.RecoverAt, codexQuotaOverdraftPauseSource)
 	}
 }
 

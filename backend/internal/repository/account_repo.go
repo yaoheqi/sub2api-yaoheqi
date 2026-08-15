@@ -2731,6 +2731,7 @@ func (r *accountRepository) ClaimCodexQuotaOverdraftProbe(
 					extra #>> '{codex_quota_overdraft_probe,status}' = 'pending'
 					AND COALESCE(NULLIF(extra #>> '{codex_quota_overdraft_probe,started_at}', '')::timestamptz, '1970-01-01'::timestamptz) <= NOW() - INTERVAL '2 minutes'
 				)
+				OR extra #>> '{codex_quota_overdraft_probe,status}' = 'passed'
 			)
 	`, service.CodexQuotaOverdraftProbeExtraKey, string(payload), id, state.CycleKey)
 	if err != nil {

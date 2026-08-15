@@ -1251,6 +1251,12 @@ func (s *adminServiceImpl) ClearAccountError(ctx context.Context, id int64) (*Ac
 	if err := s.accountRepo.ClearTempUnschedulable(ctx, id); err != nil {
 		return nil, err
 	}
+	// Resetting an account must also reset the persisted Codex overdraft
+	// probe; otherwise the UI and scheduler can retain a stale "overdraft"
+	// state after all runtime pauses have been cleared.
+	if err := s.accountRepo.UpdateExtra(ctx, id, map[string]any{CodexQuotaOverdraftProbeExtraKey: nil}); err != nil {
+		return nil, err
+	}
 	if s.runtimeBlocker != nil {
 		s.runtimeBlocker.ClearAccountSchedulingBlock(id)
 	}
@@ -1267,6 +1273,13 @@ func (s *adminServiceImpl) BatchClearAccountErrors(ctx context.Context, ids []in
 			for _, account := range accounts {
 				if account != nil {
 					s.runtimeBlocker.ClearAccountSchedulingBlock(account.ID)
+				}
+			}
+		}
+		for _, account := range accounts {
+			if account != nil {
+				if err := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{CodexQuotaOverdraftProbeExtraKey: nil}); err != nil {
+					return nil, err
 				}
 			}
 		}
@@ -1577,7 +1590,19 @@ func (s *adminServiceImpl) ResetAccountQuota(ctx context.Context, id int64) erro
 		return infraerrors.New(http.StatusBadRequest, "SPARK_SHADOW_NO_QUOTA_RESET",
 			"cannot reset quota for a spark shadow account; manage it on the parent account")
 	}
-	return s.accountRepo.ResetQuotaUsed(ctx, id)
+	if err := s.accountRepo.ResetQuotaUsed(ctx, id); err != nil {
+		return err
+	}
+	if err := s.accountRepo.UpdateExtra(ctx, id, map[string]any{CodexQuotaOverdraftProbeExtraKey: nil}); err != nil {
+		return err
+	}
+	if err := s.accountRepo.ClearTempUnschedulable(ctx, id); err != nil {
+		return err
+	}
+	if s.runtimeBlocker != nil {
+		s.runtimeBlocker.ClearAccountSchedulingBlock(id)
+	}
+	return nil
 }
 
 // EnsureOpenAIPrivacy 检查 OpenAI OAuth 账号是否已设置 privacy_mode，

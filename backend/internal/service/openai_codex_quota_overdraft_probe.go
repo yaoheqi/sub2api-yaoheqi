@@ -41,6 +41,10 @@ const (
 // CodexQuotaOverdraftProbeState is persisted in accounts.extra so quota-cycle
 // decisions survive restarts and are visible through the account usage API.
 type CodexQuotaOverdraftProbeState struct {
+	// Version and UpdatedAt make probe writes monotonic across usage refreshes,
+	// retries and multiple service instances.
+	Version            uint64     `json:"version"`
+	UpdatedAt          *time.Time `json:"updated_at,omitempty"`
 	Status             string     `json:"status"`
 	QuotaWindow        string     `json:"quota_window"`
 	CycleKey           string     `json:"cycle_key"`
@@ -79,6 +83,10 @@ type codexQuotaOverdraftProbeResult struct {
 
 type codexQuotaOverdraftProbeClaimer interface {
 	ClaimCodexQuotaOverdraftProbe(context.Context, int64, *CodexQuotaOverdraftProbeState) (bool, error)
+}
+
+type codexQuotaOverdraftStateCASWriter interface {
+	UpdateCodexQuotaOverdraftState(context.Context, int64, *CodexQuotaOverdraftProbeState, uint64) (bool, error)
 }
 
 // CodexQuotaOverdraftCoordinator implements the bounded real-request gate used
@@ -279,7 +287,17 @@ func (c *CodexQuotaOverdraftCoordinator) claimProbe(accountID int64, state *Code
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if claimer, ok := c.accountRepo.(codexQuotaOverdraftProbeClaimer); ok {
-		return claimer.ClaimCodexQuotaOverdraftProbe(ctx, accountID, state)
+		claimed, err := claimer.ClaimCodexQuotaOverdraftProbe(ctx, accountID, state)
+		if claimed && err == nil {
+			// Capture the version assigned by the atomic claim. Subsequent writes
+			// must use strict equality so a stale worker cannot overwrite it.
+			if current, getErr := c.accountRepo.GetByID(ctx, accountID); getErr == nil {
+				if persisted, ok := codexQuotaOverdraftStateFromAccount(current); ok {
+					state.Version = persisted.Version
+				}
+			}
+		}
+		return claimed, err
 	}
 	if err := c.accountRepo.UpdateExtra(ctx, accountID, map[string]any{CodexQuotaOverdraftProbeExtraKey: state}); err != nil {
 		return false, err
@@ -521,6 +539,36 @@ func classifyCodexQuotaOverdraftProbe(statusCode int, headers http.Header, body 
 func (c *CodexQuotaOverdraftCoordinator) persistState(accountID int64, state *CodexQuotaOverdraftProbeState) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if writer, ok := c.accountRepo.(codexQuotaOverdraftStateCASWriter); ok {
+		for attempt := 0; attempt < 3; attempt++ {
+			current, err := c.accountRepo.GetByID(ctx, accountID)
+			if err != nil || current == nil {
+				break
+			}
+			currentState, _ := codexQuotaOverdraftStateFromAccount(current)
+			var version uint64
+			if currentState != nil {
+				version = currentState.Version
+			}
+			if state.Version != version {
+				slog.Warn("codex_quota_overdraft_state_stale_write_skipped", "account_id", accountID, "state_version", state.Version, "current_version", version)
+				return
+			}
+			updated := *state
+			updated.Version = version + 1
+			now := c.currentTime().UTC()
+			updated.UpdatedAt = &now
+			if applied, err := writer.UpdateCodexQuotaOverdraftState(ctx, accountID, &updated, version); err != nil {
+				slog.Warn("codex_quota_overdraft_state_cas_failed", "account_id", accountID, "error", err)
+				return
+			} else if applied {
+				*state = updated
+				return
+			}
+		}
+		slog.Warn("codex_quota_overdraft_state_cas_conflict", "account_id", accountID)
+		return
+	}
 	if err := c.accountRepo.UpdateExtra(ctx, accountID, map[string]any{CodexQuotaOverdraftProbeExtraKey: state}); err != nil {
 		slog.Warn("codex_quota_overdraft_state_persist_failed", "account_id", accountID, "error", err)
 	}

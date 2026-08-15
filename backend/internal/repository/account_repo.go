@@ -2717,7 +2717,12 @@ func (r *accountRepository) ClaimCodexQuotaOverdraftProbe(
 	}
 	result, err := r.sql.ExecContext(ctx, `
 		UPDATE accounts
-		SET extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object($1::text, $2::jsonb),
+		SET extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object(
+			$1::text,
+			jsonb_set(
+				jsonb_set($2::jsonb, '{version}', to_jsonb(COALESCE(NULLIF(extra #>> '{codex_quota_overdraft_probe,version}', '')::bigint, 0) + 1), true),
+				'{updated_at}', to_jsonb(NOW()), true
+			),
 			updated_at = NOW()
 		WHERE id = $3
 			AND deleted_at IS NULL
@@ -2734,6 +2739,49 @@ func (r *accountRepository) ClaimCodexQuotaOverdraftProbe(
 				OR extra #>> '{codex_quota_overdraft_probe,status}' = 'passed'
 			)
 	`, service.CodexQuotaOverdraftProbeExtraKey, string(payload), id, state.CycleKey)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return false, err
+	}
+	r.syncSchedulerAccountSnapshot(ctx, id)
+	return true, nil
+}
+
+// UpdateCodexQuotaOverdraftState atomically persists a monotonic probe state.
+// Usage refreshes and probe workers can race across replicas; the version
+// predicate prevents an older worker from overwriting a newer terminal state.
+func (r *accountRepository) UpdateCodexQuotaOverdraftState(
+	ctx context.Context,
+	id int64,
+	state *service.CodexQuotaOverdraftProbeState,
+	expectedVersion uint64,
+) (bool, error) {
+	if state == nil {
+		return false, nil
+	}
+	payload, err := json.Marshal(state)
+	if err != nil {
+		return false, err
+	}
+	// Keep the account mutation and its scheduler notification in one statement.
+	// A separate INSERT can lose the notification after a process crash.
+	result, err := r.sql.ExecContext(ctx, `
+		WITH updated AS (
+			UPDATE accounts
+			SET extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object($1::text, $2::jsonb),
+				updated_at = NOW()
+			WHERE id = $3
+			  AND deleted_at IS NULL
+			  AND COALESCE(NULLIF(extra #>> '{codex_quota_overdraft_probe,version}', '')::bigint, 0) = $4
+			RETURNING id
+		)
+		INSERT INTO scheduler_outbox (event_type, account_id, group_id, payload)
+		SELECT $5, updated.id, NULL, NULL FROM updated
+	`, service.CodexQuotaOverdraftProbeExtraKey, string(payload), id, expectedVersion,
+		service.SchedulerOutboxEventAccountChanged)
 	if err != nil {
 		return false, err
 	}

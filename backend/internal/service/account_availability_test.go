@@ -52,6 +52,31 @@ func TestProjectShadowCredentialAvailabilityAtDoesNotPropagateManualPause(t *tes
 	require.Equal(t, AccountAvailabilityTemporaryBlock, availability.Reason)
 }
 
+func TestProjectAccountSchedulingStateKeepsAllActiveSources(t *testing.T) {
+	now := time.Now().UTC()
+	future := now.Add(time.Minute)
+	account := &Account{
+		Status: StatusActive, Schedulable: false,
+		RateLimitResetAt:        &future,
+		TempUnschedulableUntil:  &future,
+		TempUnschedulableReason: `{"source":"manual_test"}`,
+	}
+	state := ProjectAccountSchedulingStateAt(account, now, []AccountSchedulingBlock{{Source: "runtime:429", Until: &future}})
+	require.False(t, state.Schedulable)
+	require.Len(t, state.Blocks, 4)
+	require.Equal(t, "schedulable", state.Blocks[0].Source)
+	require.Equal(t, "runtime:429", state.Blocks[3].Source)
+}
+
+func TestProjectAccountSchedulingStateDropsExpiredRuntimeBlock(t *testing.T) {
+	now := time.Now().UTC()
+	expired := now.Add(-time.Second)
+	state := ProjectAccountSchedulingStateAt(&Account{Status: StatusActive, Schedulable: true}, now,
+		[]AccountSchedulingBlock{{Source: "runtime", Until: &expired}})
+	require.True(t, state.Schedulable)
+	require.Empty(t, state.Blocks)
+}
+
 func availabilityTimePtr(value time.Time) *time.Time {
 	return &value
 }

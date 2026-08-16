@@ -284,7 +284,6 @@ export default {
     accountBilled: 'Account billed',
     overdraftActive: 'Overdraft active',
     overdraftRecoverAt: 'Expected recovery',
-    overdraftRetryAt: 'Next retry',
     overdraftTestedAt: 'Probed at',
     overdraftProbePending: 'Overdraft probe running',
     overdraftProbeFailed: 'Quota limit confirmed',

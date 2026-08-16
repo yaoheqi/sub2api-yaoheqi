@@ -345,6 +345,24 @@ describe('BulkEditAccountModal', () => {
     })
   })
 
+  it('OpenAI OAuth 批量选择关闭指纹收敛时显式提交 off', async () => {
+    const wrapper = mountModal({
+      selectedPlatforms: ['openai'],
+      selectedTypes: ['oauth']
+    })
+
+    await wrapper.get('#bulk-edit-codex-fingerprint-mode-enabled').setValue(true)
+    await wrapper.get('[data-testid="bulk-codex-fingerprint-mode-select"]').setValue('off')
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      extra: {
+        codex_fingerprint_mode: 'off'
+      }
+    })
+  })
+
   it('OpenAI OAuth 批量编辑应提交 codex_cli_only_allow_app_server 字段（需同时开启父开关）', async () => {
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],

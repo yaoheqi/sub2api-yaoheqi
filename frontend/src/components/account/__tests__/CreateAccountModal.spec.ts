@@ -296,6 +296,12 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
 
     expect(importCodexSessionMock).toHaveBeenCalledTimes(1)
     expect(importCodexSessionMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBeUndefined()
+    expect(importCodexSessionMock.mock.calls[0]?.[0]?.extra?.codex_fingerprint_mode).toBe('session')
+    expect(importCodexSessionMock.mock.calls[0]?.[0]?.credential_extras?.model_mapping).toEqual({
+      'gpt-5.6-sol': 'gpt-5.6-sol',
+      'gpt-5.6-terra': 'gpt-5.6-terra',
+      'gpt-5.5': 'gpt-5.5'
+    })
   })
 
   it('leaves Codex PAT import billing ownership to the backend', async () => {

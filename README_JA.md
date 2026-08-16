@@ -4,7 +4,7 @@
 
 # sub2api-overdraft
 
-[![Go](https://img.shields.io/badge/Go-1.26.5-00ADD8.svg)](https://golang.org/)
+[![Go](https://img.shields.io/badge/Go-1.26.6-00ADD8.svg)](https://golang.org/)
 [![Vue](https://img.shields.io/badge/Vue-3.4+-4FC08D.svg)](https://vuejs.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-336791.svg)](https://www.postgresql.org/)
 [![Redis](https://img.shields.io/badge/Redis-7+-DC382D.svg)](https://redis.io/)
@@ -24,7 +24,8 @@
 - Codex の 5h または 7d クォータが 100% に達した後、最大 5 回の実リクエストで利用可否を検証します。
 - 検証成功後もアカウントをスケジュール対象に保ち、リクエスト数、Token、コスト、回復時刻を表示します。
 - `pending`、`passed`、`failed`、`inconclusive`、`recovered` の状態を管理画面と PostgreSQL に保存します。
-- PostgreSQL の atomic claim により複数インスタンスで重複検証を防ぎ、追加の schema migration は不要です。
+- 判定不能な検証は 1 分、3 分、10 分後に再試行し、再起動後も PostgreSQL の保存状態から再開します。
+- PostgreSQL の atomic claim により複数インスタンスで重複検証を防ぎ、最終失敗・アカウント停止・スケジューラ通知を同一トランザクションで保存します。追加の schema migration は不要です。
 
 ソースビルド、既存環境からの移行、検証、更新、ロールバック、Nginx、トラブルシューティングについては、**[中国語のデプロイ・運用ガイド](CODEX_OVERDRAFT_DEPLOYMENT_CN.md)** を参照してください。
 
@@ -231,7 +232,7 @@ Sub2API を拡張・統合するコミュニティプロジェクト:
 
 | コンポーネント | 技術 |
 |-----------|------------|
-| バックエンド | Go 1.26.5, Gin, Ent |
+| バックエンド | Go 1.26.6, Gin, Ent |
 | フロントエンド | Vue 3.4+, Vite 5+, TailwindCSS |
 | データベース | PostgreSQL 15+ |
 | キャッシュ/キュー | Redis 7+ |

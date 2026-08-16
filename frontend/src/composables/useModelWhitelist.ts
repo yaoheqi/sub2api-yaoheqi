@@ -20,6 +20,9 @@ const openaiModels = [
   'gpt-image-1', 'gpt-image-1.5', 'gpt-image-2'
 ]
 
+// Codex OAuth 新账号的默认白名单。完整 OpenAI 目录仍用于 API Key 和手动选择。
+export const codexOAuthDefaultModels = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.5']
+
 // Anthropic Claude
 export const claudeModels = [
   'claude-3-5-sonnet-20241022', 'claude-3-5-sonnet-20240620',

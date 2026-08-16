@@ -155,20 +155,9 @@ type AccountTestService struct {
 	grokWSDialer openAIWSClientDialer
 }
 
-type codexQuotaOverdraftAccountTestCoordinator interface {
-	ObserveAccount(account *Account, preferredModel string)
-	HandleQuota429(ctx context.Context, account *Account, headers http.Header, body []byte, preferredModel string) bool
-}
-
 func (s *AccountTestService) SetSettingService(settingService *SettingService) {
 	if s != nil {
 		s.settingService = settingService
-	}
-}
-
-func (s *AccountTestService) SetCodexQuotaOverdraftCoordinator(coordinator *CodexQuotaOverdraftCoordinator) {
-	if s != nil {
-		s.codexQuotaOverdraft = coordinator
 	}
 }
 
@@ -707,11 +696,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	}
 	payload := createOpenAITestPayload(upstreamTestModelID, isOAuth)
 	payloadBytes, _ := json.Marshal(payload)
-	if s.codexQuotaOverdraftTestEnabled(account) {
-		if updated, changed, err := injectCodexQuotaOverdraft(payloadBytes); err == nil && changed {
-			payloadBytes = updated
-		}
-	}
+	ctx, payloadBytes, overdraftInjected := s.prepareCodexQuotaOverdraftTestRequest(ctx, account, payloadBytes)
 
 	// Send test_start event once. A task-invalid Agent Identity response may
 	// restart this probe after registering a replacement task.
@@ -795,9 +780,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 			return s.testOpenAIAccountConnection(c, account, modelID, prompt, mode)
 		}
 		if resp.StatusCode == http.StatusTooManyRequests {
-			handled := s.codexQuotaOverdraft != nil && s.codexQuotaOverdraftTestEnabled(account) &&
-				s.codexQuotaOverdraft.HandleQuota429(ctx, account, resp.Header, body, upstreamTestModelID)
-			if !handled {
+			if !s.handleCodexQuotaOverdraftTest429(ctx, account, resp.Header, body, upstreamTestModelID) {
 				s.reconcileOpenAI429State(ctx, account, resp.Header, body)
 			}
 		}
@@ -810,15 +793,8 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	if err := s.processOpenAIStream(c, resp.Body); err != nil {
 		return err
 	}
-	if s.codexQuotaOverdraft != nil && s.codexQuotaOverdraftTestEnabled(account) {
-		s.codexQuotaOverdraft.ObserveAccount(account, upstreamTestModelID)
-	}
+	s.observeCodexQuotaOverdraftTestResult(account, upstreamTestModelID, overdraftInjected)
 	return nil
-}
-
-func (s *AccountTestService) codexQuotaOverdraftTestEnabled(account *Account) bool {
-	return s != nil && s.cfg != nil && s.cfg.Gateway.CodexQuotaOverdraftEnabled &&
-		isCodexQuotaOverdraftAccount(account)
 }
 
 // testGrokAccountConnection routes Grok admin connectivity tests by explicit mode first,

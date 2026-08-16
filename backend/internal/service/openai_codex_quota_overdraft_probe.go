@@ -27,12 +27,12 @@ const (
 	codexQuotaOverdraftProbeInconclusive = "inconclusive"
 	codexQuotaOverdraftProbeRecovered    = "recovered"
 
-	codexQuotaOverdraftProbeAttemptLimit   = 5
+	codexQuotaOverdraftProbeAttemptLimit   = 1
 	codexQuotaOverdraftProbeAttemptTimeout = 20 * time.Second
 	codexQuotaOverdraftProbePlanTimeout    = codexQuotaOverdraftProbeAttemptLimit * codexQuotaOverdraftProbeAttemptTimeout
-	codexQuotaOverdraftProbeRetryDelay     = time.Minute
 	codexQuotaOverdraftProbeBodyLimit      = 256 << 10
 	codexQuotaOverdraftPauseSource         = "codex_quota_overdraft"
+	codexQuotaOverdraftPersistAttempts     = 3
 
 	codexQuotaOverdraftFallbackModel      = "gpt-5.5"
 	codexQuotaOverdraftCompatibilityModel = "gpt-5.4-mini"
@@ -41,10 +41,6 @@ const (
 // CodexQuotaOverdraftProbeState is persisted in accounts.extra so quota-cycle
 // decisions survive restarts and are visible through the account usage API.
 type CodexQuotaOverdraftProbeState struct {
-	// Version and UpdatedAt make probe writes monotonic across usage refreshes,
-	// retries and multiple service instances.
-	Version            uint64     `json:"version"`
-	UpdatedAt          *time.Time `json:"updated_at,omitempty"`
 	Status             string     `json:"status"`
 	QuotaWindow        string     `json:"quota_window"`
 	CycleKey           string     `json:"cycle_key"`
@@ -55,6 +51,7 @@ type CodexQuotaOverdraftProbeState struct {
 	StartedAt          time.Time  `json:"started_at"`
 	TestedAt           *time.Time `json:"tested_at,omitempty"`
 	RetryAt            *time.Time `json:"retry_at,omitempty"`
+	RetryCount         int        `json:"retry_count,omitempty"`
 	RecoverAt          *time.Time `json:"recover_at,omitempty"`
 	FiveHourRecoverAt  *time.Time `json:"five_hour_recover_at,omitempty"`
 	SevenDayRecoverAt  *time.Time `json:"seven_day_recover_at,omitempty"`
@@ -85,8 +82,16 @@ type codexQuotaOverdraftProbeClaimer interface {
 	ClaimCodexQuotaOverdraftProbe(context.Context, int64, *CodexQuotaOverdraftProbeState) (bool, error)
 }
 
-type codexQuotaOverdraftStateCASWriter interface {
-	UpdateCodexQuotaOverdraftState(context.Context, int64, *CodexQuotaOverdraftProbeState, uint64) (bool, error)
+type codexQuotaOverdraftFailedFinalizer interface {
+	FinalizeCodexQuotaOverdraftProbeFailed(context.Context, int64, *CodexQuotaOverdraftProbeState, time.Time, string) (bool, error)
+}
+
+type codexQuotaOverdraftNonFailedPersister interface {
+	PersistCodexQuotaOverdraftProbeUnlessFailed(context.Context, int64, *CodexQuotaOverdraftProbeState) (bool, error)
+}
+
+type codexQuotaOverdraftPauseClearer interface {
+	ClearCodexQuotaOverdraftPauseIfState(context.Context, int64, string, string, string) (bool, bool, error)
 }
 
 // CodexQuotaOverdraftCoordinator implements the bounded real-request gate used
@@ -131,7 +136,6 @@ func NewCodexQuotaOverdraftCoordinator(
 	coordinator.agentIdentityWS, _ = runtimeBlocker.(agentIdentityWSConnectionInvalidator)
 	return coordinator
 }
-
 func (c *CodexQuotaOverdraftCoordinator) enabled() bool {
 	return c != nil && c.cfg != nil && c.cfg.Gateway.CodexQuotaOverdraftEnabled &&
 		c.accountRepo != nil && c.httpUpstream != nil
@@ -145,6 +149,77 @@ func (c *CodexQuotaOverdraftCoordinator) ObserveAccount(account *Account, prefer
 	}
 	accountCopy := cloneCodexQuotaOverdraftAccount(account)
 	go c.observeAccount(accountCopy, preferredModel)
+}
+
+// ObserveBusinessSuccess treats a successful request that actually carried the
+// overdraft payload as stronger evidence than a synthetic probe.
+func (c *CodexQuotaOverdraftCoordinator) ObserveBusinessSuccess(account *Account, preferredModel string) {
+	if !c.enabled() || !isCodexQuotaOverdraftAccount(account) || account.ID <= 0 {
+		return
+	}
+	accountCopy := cloneCodexQuotaOverdraftAccount(account)
+	go c.observeBusinessSuccess(accountCopy, preferredModel)
+}
+
+func (c *CodexQuotaOverdraftCoordinator) ObserveBusinessSuccessByID(accountID int64, preferredModel string) {
+	if !c.enabled() || accountID <= 0 {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		account, err := c.accountRepo.GetByID(ctx, accountID)
+		cancel()
+		if err != nil || !isCodexQuotaOverdraftAccount(account) {
+			return
+		}
+		c.observeBusinessSuccess(account, preferredModel)
+	}()
+}
+
+func (c *CodexQuotaOverdraftCoordinator) observeBusinessSuccess(account *Account, preferredModel string) {
+	if account == nil {
+		return
+	}
+	now := c.currentTime()
+	current, _ := codexQuotaOverdraftStateFromAccount(account)
+	signal, exhausted := codexQuotaOverdraftSignalFromAccount(account, current, now)
+	if !exhausted {
+		return
+	}
+	if current != nil && current.Status == codexQuotaOverdraftProbePassed && codexQuotaOverdraftStateCoversSignal(current, signal) {
+		return
+	}
+	if current != nil && current.Status == codexQuotaOverdraftProbeFailed && codexQuotaOverdraftStateCoversSignal(current, signal) {
+		return
+	}
+	state := &CodexQuotaOverdraftProbeState{
+		Status:            codexQuotaOverdraftProbePassed,
+		QuotaWindow:       signal.Window,
+		CycleKey:          signal.CycleKey,
+		Attempts:          1,
+		Limit:             codexQuotaOverdraftProbeAttemptLimit,
+		Model:             strings.TrimSpace(preferredModel),
+		ReasonCode:        "business_request_ok",
+		StartedAt:         now,
+		TestedAt:          codexQuotaOverdraftTimePtr(now),
+		RecoverAt:         codexQuotaOverdraftTimePtr(signal.RecoverAt),
+		FiveHourRecoverAt: cloneTimePtr(signal.FiveHourRecoverAt),
+		SevenDayRecoverAt: cloneTimePtr(signal.SevenDayRecoverAt),
+		ObservedRateLimit: cloneTimePtr(account.RateLimitResetAt),
+	}
+	carryCodexQuotaOverdraftWindowStarts(state, current, signal, now)
+	startCodexQuotaOverdraftWindows(state, signal, now)
+	if !c.persistNonFailedState(account.ID, state) {
+		return
+	}
+	mergeAccountExtra(account, map[string]any{CodexQuotaOverdraftProbeExtraKey: state})
+	c.clearQuotaPause(account.ID, state)
+	slog.Info("codex_quota_overdraft_business_passed",
+		"account_id", account.ID,
+		"model", state.Model,
+		"quota_window", signal.Window,
+		"cycle_key", signal.CycleKey,
+	)
 }
 
 func (c *CodexQuotaOverdraftCoordinator) observeAccount(account *Account, preferredModel string) {
@@ -162,7 +237,7 @@ func (c *CodexQuotaOverdraftCoordinator) observeAccount(account *Account, prefer
 		c.recoverCycle(account, state, now)
 		return
 	}
-	c.startProbe(account, signal, preferredModel, false)
+	c.startProbe(account, signal, preferredModel)
 }
 
 // HandleQuota429 intercepts only definite subscription-quota 429s. Ordinary
@@ -174,7 +249,8 @@ func (c *CodexQuotaOverdraftCoordinator) HandleQuota429(
 	body []byte,
 	preferredModel string,
 ) bool {
-	if !c.enabled() || !isCodexQuotaOverdraftAccount(account) || account.ID <= 0 {
+	if !c.enabled() || !isCodexQuotaOverdraftAccount(account) || account.ID <= 0 ||
+		!codexQuotaOverdraftResponseIsQuotaLimited(headers, body) {
 		return false
 	}
 
@@ -187,29 +263,6 @@ func (c *CodexQuotaOverdraftCoordinator) HandleQuota429(
 		cancel()
 	}
 	state, _ := codexQuotaOverdraftStateFromAccount(accountCopy)
-	knownOverdraft := false
-	if state != nil && state.Status == codexQuotaOverdraftProbePassed {
-		_, knownOverdraft = codexQuotaOverdraftSignalFromAccount(accountCopy, state, c.currentTime())
-	}
-	responseQuotaLimited := codexQuotaOverdraftResponseIsQuotaLimited(headers, body)
-	// A passed probe plus a still-exhausted persisted window is authoritative
-	// enough to absorb quota 429s whose response omitted Codex quota headers.
-	// Without this fallback, the generic 429 handler keeps rewriting the
-	// account cooldown and the scheduler appears stuck in a stale state.
-	if !responseQuotaLimited && !knownOverdraft {
-		return false
-	}
-	if !responseQuotaLimited {
-		// A known exhausted window with an unlabelled 429 is still a real
-		// quota failure. Keep the account out of scheduling while the probe
-		// retries instead of letting the generic 429 path mark it healthy.
-		signal, exhausted := codexQuotaOverdraftSignalFromAccount(accountCopy, state, c.currentTime())
-		if exhausted {
-			c.pauseForQuota429(accountCopy, signal)
-			c.startProbe(accountCopy, signal, preferredModel, true)
-		}
-		return true
-	}
 	signal, exhausted := codexQuotaOverdraftSignalFromAccount(accountCopy, state, c.currentTime())
 	if !exhausted {
 		signal = codexQuotaOverdraftFallbackSignal(headers, body, state, c.currentTime())
@@ -217,12 +270,83 @@ func (c *CodexQuotaOverdraftCoordinator) HandleQuota429(
 	if signal.CycleKey == "" {
 		return false
 	}
-	c.pauseForQuota429(accountCopy, signal)
-	c.startProbe(accountCopy, signal, preferredModel, true)
+	if codexQuotaOverdraftWasInjected(ctx, account.ID) {
+		return c.finishBusinessQuotaFailure(accountCopy, signal, preferredModel)
+	}
+	c.startProbe(accountCopy, signal, preferredModel)
 	return true
 }
 
-func (c *CodexQuotaOverdraftCoordinator) startProbe(account *Account, signal codexQuotaOverdraftSignal, preferredModel string, retryPassed bool) {
+func (c *CodexQuotaOverdraftCoordinator) finishBusinessQuotaFailure(
+	account *Account,
+	signal codexQuotaOverdraftSignal,
+	preferredModel string,
+) bool {
+	if account == nil || signal.CycleKey == "" {
+		return false
+	}
+	now := c.currentTime()
+	current, hasCurrent := codexQuotaOverdraftStateFromAccount(account)
+	if hasCurrent && codexQuotaOverdraftStateCoversSignal(current, signal) && current.Status == codexQuotaOverdraftProbeFailed {
+		return c.ensureFailedPause(account, current)
+	}
+	if !hasCurrent || !codexQuotaOverdraftStateCoversSignal(current, signal) {
+		current = &CodexQuotaOverdraftProbeState{
+			Status:            codexQuotaOverdraftProbePending,
+			QuotaWindow:       signal.Window,
+			CycleKey:          signal.CycleKey,
+			Limit:             codexQuotaOverdraftProbeAttemptLimit,
+			StartedAt:         now,
+			RecoverAt:         codexQuotaOverdraftTimePtr(signal.RecoverAt),
+			FiveHourRecoverAt: cloneTimePtr(signal.FiveHourRecoverAt),
+			SevenDayRecoverAt: cloneTimePtr(signal.SevenDayRecoverAt),
+			ObservedRateLimit: cloneTimePtr(account.RateLimitResetAt),
+		}
+		claimed, err := c.claimProbe(account.ID, current)
+		if err != nil {
+			slog.Warn("codex_quota_overdraft_business_failure_claim_failed", "account_id", account.ID, "error", err)
+			return false
+		}
+		if !claimed {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			latest, loadErr := c.accountRepo.GetByID(ctx, account.ID)
+			cancel()
+			latestState, ok := codexQuotaOverdraftStateFromAccount(latest)
+			if loadErr != nil || !ok || !codexQuotaOverdraftStateCoversSignal(latestState, signal) {
+				return false
+			}
+			account = latest
+			current = latestState
+			if current.Status == codexQuotaOverdraftProbeFailed {
+				return c.ensureFailedPause(account, current)
+			}
+		}
+	}
+	state := *current
+	state.Status = codexQuotaOverdraftProbeFailed
+	if state.Attempts < 1 {
+		state.Attempts = 1
+	}
+	state.Model = strings.TrimSpace(preferredModel)
+	state.ReasonCode = "business_quota_limited"
+	state.TestedAt = codexQuotaOverdraftTimePtr(now)
+	state.RetryAt = nil
+	state.RecoverAt = codexQuotaOverdraftTimePtr(signal.RecoverAt)
+	state.FiveHourRecoverAt = cloneTimePtr(signal.FiveHourRecoverAt)
+	state.SevenDayRecoverAt = cloneTimePtr(signal.SevenDayRecoverAt)
+	if !c.ensureFailedPause(account, &state) {
+		return false
+	}
+	slog.Warn("codex_quota_overdraft_business_exhausted",
+		"account_id", account.ID,
+		"model", state.Model,
+		"quota_window", signal.Window,
+		"recover_at", state.RecoverAt,
+	)
+	return true
+}
+
+func (c *CodexQuotaOverdraftCoordinator) startProbe(account *Account, signal codexQuotaOverdraftSignal, preferredModel string) {
 	if account == nil || signal.CycleKey == "" {
 		return
 	}
@@ -230,23 +354,12 @@ func (c *CodexQuotaOverdraftCoordinator) startProbe(account *Account, signal cod
 	if hasCurrent && codexQuotaOverdraftStateCoversSignal(current, signal) {
 		switch current.Status {
 		case codexQuotaOverdraftProbePassed:
-			if !retryPassed {
-				c.clearQuotaPause(account.ID, current)
-				return
-			}
-			// A later quota 429 in the same exhausted window invalidates the
-			// earlier pass. Re-enter the bounded probe before resuming traffic.
+			return
 		case codexQuotaOverdraftProbeFailed:
 			c.ensureFailedPause(account, current)
 			return
-		case codexQuotaOverdraftProbePending:
-			if c.currentTime().Sub(current.StartedAt) < 2*time.Minute {
-				return
-			}
-		case codexQuotaOverdraftProbeInconclusive:
-			if current.RetryAt != nil && c.currentTime().Before(*current.RetryAt) {
-				return
-			}
+		case codexQuotaOverdraftProbePending, codexQuotaOverdraftProbeInconclusive:
+			return
 		}
 	}
 
@@ -287,17 +400,7 @@ func (c *CodexQuotaOverdraftCoordinator) claimProbe(accountID int64, state *Code
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if claimer, ok := c.accountRepo.(codexQuotaOverdraftProbeClaimer); ok {
-		claimed, err := claimer.ClaimCodexQuotaOverdraftProbe(ctx, accountID, state)
-		if claimed && err == nil {
-			// Capture the version assigned by the atomic claim. Subsequent writes
-			// must use strict equality so a stale worker cannot overwrite it.
-			if current, getErr := c.accountRepo.GetByID(ctx, accountID); getErr == nil {
-				if persisted, ok := codexQuotaOverdraftStateFromAccount(current); ok {
-					state.Version = persisted.Version
-				}
-			}
-		}
-		return claimed, err
+		return claimer.ClaimCodexQuotaOverdraftProbe(ctx, accountID, state)
 	}
 	if err := c.accountRepo.UpdateExtra(ctx, accountID, map[string]any{CodexQuotaOverdraftProbeExtraKey: state}); err != nil {
 		return false, err
@@ -340,14 +443,25 @@ func (c *CodexQuotaOverdraftCoordinator) runProbePlan(
 		if result.ReasonCode == "quota_limited" {
 			quotaLimitedAttempts++
 		}
-		c.persistState(accountID, state)
-
+		slog.Info("codex_quota_overdraft_probe_attempt",
+			"account_id", accountID,
+			"attempt", state.Attempts,
+			"limit", codexQuotaOverdraftProbeAttemptLimit,
+			"model", state.Model,
+			"status_code", result.StatusCode,
+			"result_status", result.Status,
+			"reason", result.ReasonCode,
+			"quota_window", signal.Window,
+		)
 		if result.Status == "available" {
 			state.Status = codexQuotaOverdraftProbePassed
 			state.ReasonCode = "model_response_ok"
 			state.RetryAt = nil
+			state.RetryCount = 0
 			startCodexQuotaOverdraftWindows(state, signal, testedAt)
-			c.persistState(accountID, state)
+			if !c.persistNonFailedState(accountID, state) {
+				return
+			}
 			c.clearQuotaPause(accountID, state)
 			slog.Info("codex_quota_overdraft_probe_passed", "account_id", accountID, "attempts", state.Attempts, "model", state.Model, "quota_window", signal.Window)
 			return
@@ -372,20 +486,32 @@ func (c *CodexQuotaOverdraftCoordinator) runProbePlan(
 	state.Status = codexQuotaOverdraftProbeFailed
 	state.ReasonCode = lastReason
 	state.RetryAt = nil
-	c.persistState(accountID, state)
-	c.ensureFailedPause(account, state)
+	state.RetryCount = 0
+	if !c.ensureFailedPause(account, state) {
+		return
+	}
 	slog.Warn("codex_quota_overdraft_probe_failed", "account_id", accountID, "attempts", state.Attempts, "quota_window", signal.Window, "recover_at", state.RecoverAt)
 }
 
-func (c *CodexQuotaOverdraftCoordinator) finishInconclusive(accountID int64, state *CodexQuotaOverdraftProbeState, reason string) {
+func (c *CodexQuotaOverdraftCoordinator) finishInconclusive(
+	accountID int64,
+	state *CodexQuotaOverdraftProbeState,
+	reason string,
+) {
 	now := c.currentTime().UTC()
-	retryAt := now.Add(codexQuotaOverdraftProbeRetryDelay)
 	state.Status = codexQuotaOverdraftProbeInconclusive
 	state.ReasonCode = reason
 	state.TestedAt = &now
-	state.RetryAt = &retryAt
-	c.persistState(accountID, state)
-	slog.Warn("codex_quota_overdraft_probe_inconclusive", "account_id", accountID, "attempts", state.Attempts, "reason", reason)
+	state.RetryAt = nil
+	state.RetryCount = 0
+	if !c.persistNonFailedState(accountID, state) {
+		return
+	}
+	slog.Warn("codex_quota_overdraft_probe_inconclusive",
+		"account_id", accountID,
+		"attempts", state.Attempts,
+		"reason", reason,
+	)
 }
 
 func (c *CodexQuotaOverdraftCoordinator) runProbeAttempt(ctx context.Context, account *Account, model string) codexQuotaOverdraftProbeResult {
@@ -499,6 +625,9 @@ func classifyCodexQuotaOverdraftProbe(statusCode int, headers http.Header, body 
 		lower := bytes.ToLower(body)
 		if bytes.Contains(lower, []byte(`"type":"error"`)) || bytes.Contains(lower, []byte(`"type": "error"`)) ||
 			bytes.Contains(lower, []byte(`"response.failed"`)) {
+			if codexQuotaOverdraftResponseIsQuotaLimited(headers, body) {
+				return "retry", "quota_limited"
+			}
 			return "retry", "invalid_response"
 		}
 		if bytes.Contains(lower, []byte(`"response.completed"`)) || bytes.Contains(lower, []byte(`"response.output_item.done"`)) {
@@ -526,100 +655,149 @@ func classifyCodexQuotaOverdraftProbe(statusCode int, headers http.Header, body 
 	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
 		return "inconclusive", "request_timeout"
 	default:
+		if codexQuotaOverdraftResponseIsQuotaLimited(headers, body) {
+			return "retry", "quota_limited"
+		}
 		if statusCode >= http.StatusInternalServerError {
 			return "inconclusive", "upstream_unavailable"
 		}
 		if statusCode == http.StatusBadRequest || statusCode == http.StatusNotFound {
-			return "inconclusive", "model_not_found"
+			return "retry", "model_not_found"
 		}
 		return "inconclusive", "invalid_response"
 	}
 }
 
-func (c *CodexQuotaOverdraftCoordinator) persistState(accountID int64, state *CodexQuotaOverdraftProbeState) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if writer, ok := c.accountRepo.(codexQuotaOverdraftStateCASWriter); ok {
-		for attempt := 0; attempt < 3; attempt++ {
-			current, err := c.accountRepo.GetByID(ctx, accountID)
-			if err != nil || current == nil {
-				break
-			}
-			currentState, _ := codexQuotaOverdraftStateFromAccount(current)
-			var version uint64
-			if currentState != nil {
-				version = currentState.Version
-			}
-			if state.Version != version {
-				slog.Warn("codex_quota_overdraft_state_stale_write_skipped", "account_id", accountID, "state_version", state.Version, "current_version", version)
-				return
-			}
-			updated := *state
-			updated.Version = version + 1
-			now := c.currentTime().UTC()
-			updated.UpdatedAt = &now
-			if applied, err := writer.UpdateCodexQuotaOverdraftState(ctx, accountID, &updated, version); err != nil {
-				slog.Warn("codex_quota_overdraft_state_cas_failed", "account_id", accountID, "error", err)
-				return
-			} else if applied {
-				*state = updated
-				return
-			}
+func (c *CodexQuotaOverdraftCoordinator) persistState(accountID int64, state *CodexQuotaOverdraftProbeState) bool {
+	var lastErr error
+	for attempt := 1; attempt <= codexQuotaOverdraftPersistAttempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		lastErr = c.accountRepo.UpdateExtra(ctx, accountID, map[string]any{CodexQuotaOverdraftProbeExtraKey: state})
+		cancel()
+		if lastErr == nil {
+			return true
 		}
-		slog.Warn("codex_quota_overdraft_state_cas_conflict", "account_id", accountID)
-		return
+		if attempt < codexQuotaOverdraftPersistAttempts {
+			time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+		}
 	}
-	if err := c.accountRepo.UpdateExtra(ctx, accountID, map[string]any{CodexQuotaOverdraftProbeExtraKey: state}); err != nil {
-		slog.Warn("codex_quota_overdraft_state_persist_failed", "account_id", accountID, "error", err)
-	}
+	slog.Warn("codex_quota_overdraft_state_persist_failed",
+		"account_id", accountID,
+		"attempts", codexQuotaOverdraftPersistAttempts,
+		"error", lastErr,
+	)
+	return false
 }
 
-func (c *CodexQuotaOverdraftCoordinator) ensureFailedPause(account *Account, state *CodexQuotaOverdraftProbeState) {
-	if account == nil || state == nil || state.RecoverAt == nil || !state.RecoverAt.After(c.currentTime()) {
-		return
+// persistNonFailedState keeps an already-confirmed quota failure terminal for
+// the current cycle, even when a concurrent success or probe finishes later.
+func (c *CodexQuotaOverdraftCoordinator) persistNonFailedState(accountID int64, state *CodexQuotaOverdraftProbeState) bool {
+	if state == nil || state.Status == codexQuotaOverdraftProbeFailed {
+		return false
 	}
-	reason := BuildTempUnschedReasonPayload(codexQuotaOverdraftPauseSource, "five real overdraft probes confirmed quota exhaustion")
+	persister, ok := c.accountRepo.(codexQuotaOverdraftNonFailedPersister)
+	if !ok {
+		return c.persistState(accountID, state)
+	}
+	var (
+		persisted bool
+		lastErr   error
+	)
+	for attempt := 1; attempt <= codexQuotaOverdraftPersistAttempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		persisted, lastErr = persister.PersistCodexQuotaOverdraftProbeUnlessFailed(ctx, accountID, state)
+		cancel()
+		if lastErr == nil {
+			return persisted
+		}
+		if attempt < codexQuotaOverdraftPersistAttempts {
+			time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+		}
+	}
+	slog.Warn("codex_quota_overdraft_state_persist_failed",
+		"account_id", accountID,
+		"attempts", codexQuotaOverdraftPersistAttempts,
+		"error", lastErr,
+	)
+	return false
+}
+
+func (c *CodexQuotaOverdraftCoordinator) ensureFailedPause(account *Account, state *CodexQuotaOverdraftProbeState) bool {
+	if account == nil || state == nil || state.RecoverAt == nil || !state.RecoverAt.After(c.currentTime()) {
+		return false
+	}
+	if persisted, ok := codexQuotaOverdraftStateFromAccount(account); ok &&
+		persisted.Status == codexQuotaOverdraftProbeFailed && persisted.CycleKey == state.CycleKey &&
+		account.TempUnschedulableUntil != nil && !account.TempUnschedulableUntil.Before(*state.RecoverAt) {
+		return true
+	}
+	reason := BuildTempUnschedReasonPayload(codexQuotaOverdraftPauseSource, "injected overdraft request confirmed quota exhaustion")
+	if finalizer, ok := c.accountRepo.(codexQuotaOverdraftFailedFinalizer); ok {
+		finalized := false
+		var lastErr error
+		for attempt := 1; attempt <= codexQuotaOverdraftPersistAttempts; attempt++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			finalized, lastErr = finalizer.FinalizeCodexQuotaOverdraftProbeFailed(ctx, account.ID, state, *state.RecoverAt, reason)
+			cancel()
+			if lastErr == nil {
+				break
+			}
+			if attempt < codexQuotaOverdraftPersistAttempts {
+				time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+			}
+		}
+		if lastErr != nil {
+			slog.Warn("codex_quota_overdraft_pause_failed",
+				"account_id", account.ID,
+				"attempts", codexQuotaOverdraftPersistAttempts,
+				"error", lastErr,
+			)
+			return false
+		}
+		if !finalized {
+			slog.Warn("codex_quota_overdraft_pause_stale", "account_id", account.ID, "cycle_key", state.CycleKey)
+			return false
+		}
+	} else {
+		if !c.persistState(account.ID, state) {
+			return false
+		}
+		var lastErr error
+		for attempt := 1; attempt <= codexQuotaOverdraftPersistAttempts; attempt++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			lastErr = c.accountRepo.SetTempUnschedulable(ctx, account.ID, *state.RecoverAt, reason)
+			cancel()
+			if lastErr == nil {
+				break
+			}
+			if attempt < codexQuotaOverdraftPersistAttempts {
+				time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+			}
+		}
+		if lastErr != nil {
+			slog.Warn("codex_quota_overdraft_pause_failed",
+				"account_id", account.ID,
+				"attempts", codexQuotaOverdraftPersistAttempts,
+				"error", lastErr,
+			)
+			return false
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := c.accountRepo.SetTempUnschedulable(ctx, account.ID, *state.RecoverAt, reason); err != nil {
-		slog.Warn("codex_quota_overdraft_pause_failed", "account_id", account.ID, "error", err)
-		return
-	}
 	if c.tempUnschedCache != nil {
 		_ = c.tempUnschedCache.SetTempUnsched(ctx, account.ID, &TempUnschedState{
 			UntilUnix:       state.RecoverAt.Unix(),
 			TriggeredAtUnix: c.currentTime().Unix(),
 			StatusCode:      http.StatusTooManyRequests,
-			ErrorMessage:    "five real overdraft probes confirmed quota exhaustion",
+			ErrorMessage:    "injected overdraft request confirmed quota exhaustion",
 		})
 	}
 	if c.runtimeBlocker != nil {
 		c.runtimeBlocker.BlockAccountScheduling(account, *state.RecoverAt, codexQuotaOverdraftPauseSource)
 	}
-}
-
-func (c *CodexQuotaOverdraftCoordinator) pauseForQuota429(account *Account, signal codexQuotaOverdraftSignal) {
-	if account == nil || signal.RecoverAt.IsZero() || !signal.RecoverAt.After(c.currentTime()) {
-		return
-	}
-	reason := BuildTempUnschedReasonPayload(codexQuotaOverdraftPauseSource, "quota 429 while overdraft probe is active")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := c.accountRepo.SetTempUnschedulable(ctx, account.ID, signal.RecoverAt, reason); err != nil {
-		slog.Warn("codex_quota_overdraft_quota_429_pause_failed", "account_id", account.ID, "error", err)
-		return
-	}
-	if c.tempUnschedCache != nil {
-		_ = c.tempUnschedCache.SetTempUnsched(ctx, account.ID, &TempUnschedState{
-			UntilUnix:       signal.RecoverAt.Unix(),
-			TriggeredAtUnix: c.currentTime().Unix(),
-			StatusCode:      http.StatusTooManyRequests,
-			ErrorMessage:    "quota 429 while overdraft probe is active",
-		})
-	}
-	if c.runtimeBlocker != nil {
-		c.runtimeBlocker.BlockAccountScheduling(account, signal.RecoverAt, codexQuotaOverdraftPauseSource)
-	}
+	slog.Info("codex_quota_overdraft_pause_applied", "account_id", account.ID, "until", state.RecoverAt, "cycle_key", state.CycleKey)
+	return true
 }
 
 func (c *CodexQuotaOverdraftCoordinator) clearQuotaPause(accountID int64, state *CodexQuotaOverdraftProbeState) {
@@ -629,10 +807,40 @@ func (c *CodexQuotaOverdraftCoordinator) clearQuotaPause(accountID int64, state 
 	if err != nil || account == nil {
 		return
 	}
+	persisted, ok := codexQuotaOverdraftStateFromAccount(account)
+	if !ok || state == nil || persisted.CycleKey != state.CycleKey || persisted.Status != state.Status ||
+		(state.Status != codexQuotaOverdraftProbePassed && state.Status != codexQuotaOverdraftProbeRecovered) {
+		return
+	}
+	expectedTempReason := ""
+	if IsAccountSchedulingThresholdReason(account.TempUnschedulableReason) || codexQuotaOverdraftPauseReason(account.TempUnschedulableReason) {
+		expectedTempReason = account.TempUnschedulableReason
+	}
+	if clearer, ok := c.accountRepo.(codexQuotaOverdraftPauseClearer); ok {
+		clearedRateLimit, clearedTemp, clearErr := clearer.ClearCodexQuotaOverdraftPauseIfState(
+			ctx,
+			accountID,
+			state.CycleKey,
+			state.Status,
+			expectedTempReason,
+		)
+		if clearErr != nil {
+			slog.Warn("codex_quota_overdraft_stale_rate_limit_clear_failed", "account_id", accountID, "error", clearErr)
+			return
+		}
+		if clearedRateLimit {
+			slog.Info("codex_quota_overdraft_stale_rate_limit_cleared", "account_id", accountID, "probe_status", state.Status)
+		}
+		if clearedTemp && c.tempUnschedCache != nil {
+			_ = c.tempUnschedCache.DeleteTempUnsched(ctx, accountID)
+		}
+		if (clearedRateLimit || clearedTemp) && c.runtimeBlocker != nil {
+			c.runtimeBlocker.ClearAccountSchedulingBlock(accountID)
+		}
+		return
+	}
 	clearedSchedulingState := false
-	probeProvedAvailable := state != nil &&
-		(state.Status == codexQuotaOverdraftProbePassed || state.Status == codexQuotaOverdraftProbeRecovered)
-	if probeProvedAvailable && account.RateLimitResetAt != nil {
+	if account.RateLimitResetAt != nil {
 		staleResetAt := account.RateLimitResetAt.UTC()
 		if err := c.accountRepo.ClearRateLimit(ctx, accountID); err != nil {
 			slog.Warn("codex_quota_overdraft_stale_rate_limit_clear_failed", "account_id", accountID, "reset_at", staleResetAt, "error", err)
@@ -641,7 +849,7 @@ func (c *CodexQuotaOverdraftCoordinator) clearQuotaPause(accountID int64, state 
 			slog.Info("codex_quota_overdraft_stale_rate_limit_cleared", "account_id", accountID, "reset_at", staleResetAt, "probe_status", state.Status)
 		}
 	}
-	if IsAccountSchedulingThresholdReason(account.TempUnschedulableReason) || codexQuotaOverdraftPauseReason(account.TempUnschedulableReason) {
+	if expectedTempReason != "" {
 		_ = c.accountRepo.ClearTempUnschedulable(ctx, accountID)
 		clearedSchedulingState = true
 		if c.tempUnschedCache != nil {
@@ -698,6 +906,28 @@ func codexQuotaOverdraftProbeModels(preferred string) []string {
 }
 
 func codexQuotaOverdraftResponseIsQuotaLimited(headers http.Header, body []byte) bool {
+	var payload any
+	parsedPayload := len(bytes.TrimSpace(body)) > 0 && json.Unmarshal(body, &payload) == nil
+	if parsedPayload && codexQuotaOverdraftJSONHasQuotaEvidence(payload, 0) {
+		return true
+	}
+	text := strings.ToLower(strings.Join(strings.Fields(string(body)), " "))
+	for _, marker := range []string{
+		"usage_limit_reached",
+		"usage limit has been reached",
+		"you have reached your usage limit",
+		"quota exhausted",
+		"insufficient quota",
+		"weekly limit reached",
+		"weekly_limit_reached",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	if parsedPayload && codexQuotaOverdraftJSONHasTransientRateLimitEvidence(payload, 0) {
+		return false
+	}
 	if snapshot := ParseCodexRateLimitHeaders(headers); snapshot != nil {
 		if normalized := snapshot.Normalize(); normalized != nil &&
 			(normalized.Used5hPercent != nil && *normalized.Used5hPercent >= 100 ||
@@ -705,10 +935,98 @@ func codexQuotaOverdraftResponseIsQuotaLimited(headers http.Header, body []byte)
 			return true
 		}
 	}
-	text := strings.ToLower(strings.Join(strings.Fields(string(body)), " "))
-	for _, marker := range []string{"usage_limit_reached", "usage limit has been reached", "quota exhausted", "weekly limit reached"} {
-		if strings.Contains(text, marker) {
+	return false
+}
+
+func codexQuotaOverdraftJSONHasQuotaEvidence(value any, depth int) bool {
+	if depth > 6 {
+		return false
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, raw := range typed {
+			normalizedKey := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(key), "-", "_"))
+			switch normalizedKey {
+			case "type", "code", "reason", "error_code":
+				if marker, ok := raw.(string); ok && codexQuotaOverdraftQuotaCode(marker) {
+					return true
+				}
+			case "limit_reached", "limitreached":
+				if reached, ok := raw.(bool); ok && reached {
+					return true
+				}
+			case "used_percent", "usedpercent":
+				if used, ok := raw.(float64); ok && used >= 100 {
+					return true
+				}
+			}
+			if codexQuotaOverdraftJSONHasQuotaEvidence(raw, depth+1) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if codexQuotaOverdraftJSONHasQuotaEvidence(item, depth+1) {
+				return true
+			}
+		}
+	case string:
+		if codexQuotaOverdraftQuotaCode(typed) {
 			return true
+		}
+		text := strings.ToLower(strings.Join(strings.Fields(typed), " "))
+		for _, marker := range []string{
+			"usage limit has been reached",
+			"you have reached your usage limit",
+			"quota exhausted",
+			"insufficient quota",
+			"weekly limit reached",
+		} {
+			if strings.Contains(text, marker) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func codexQuotaOverdraftQuotaCode(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.NewReplacer("-", "_", " ", "_").Replace(value)
+	switch value {
+	case "usage_limit_reached", "weekly_limit_reached", "monthly_limit_reached", "quota_exhausted", "insufficient_quota", "billing_hard_limit_reached":
+		return true
+	default:
+		return false
+	}
+}
+
+func codexQuotaOverdraftJSONHasTransientRateLimitEvidence(value any, depth int) bool {
+	if depth > 6 {
+		return false
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, raw := range typed {
+			normalizedKey := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(key), "-", "_"))
+			if normalizedKey == "type" || normalizedKey == "code" || normalizedKey == "reason" || normalizedKey == "error_code" {
+				if marker, ok := raw.(string); ok {
+					marker = strings.NewReplacer("-", "_", " ", "_").Replace(strings.ToLower(strings.TrimSpace(marker)))
+					switch marker {
+					case "rate_limit_exceeded", "too_many_requests", "request_rate_limited", "token_rate_limited":
+						return true
+					}
+				}
+			}
+			if codexQuotaOverdraftJSONHasTransientRateLimitEvidence(raw, depth+1) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if codexQuotaOverdraftJSONHasTransientRateLimitEvidence(item, depth+1) {
+				return true
+			}
 		}
 	}
 	return false
@@ -827,7 +1145,7 @@ func codexQuotaOverdraftStateFromAccount(account *Account) (*CodexQuotaOverdraft
 }
 
 func codexQuotaOverdraftSchedulingAllowed(account *Account, now time.Time) bool {
-	if !isCodexQuotaOverdraftAccount(account) {
+	if !codexQuotaOverdraftInjectionEligible(account, now) {
 		return false
 	}
 	state, _ := codexQuotaOverdraftStateFromAccount(account)
@@ -838,12 +1156,12 @@ func codexQuotaOverdraftSchedulingAllowed(account *Account, now time.Time) bool 
 	return state.Status != codexQuotaOverdraftProbeFailed
 }
 
-func codexQuotaOverdraftSnapshotExhausted(updates map[string]any) bool {
+func codexQuotaOverdraftSnapshotPrearmReached(updates map[string]any) bool {
 	if len(updates) == 0 {
 		return false
 	}
-	return parseExtraFloat64(updates["codex_5h_used_percent"]) >= 100 ||
-		parseExtraFloat64(updates["codex_7d_used_percent"]) >= 100
+	return parseExtraFloat64(updates["codex_5h_used_percent"]) >= codexQuotaOverdraftPrearmPercent ||
+		parseExtraFloat64(updates["codex_7d_used_percent"]) >= codexQuotaOverdraftPrearmPercent
 }
 
 func applyCodexQuotaOverdraftUsage(

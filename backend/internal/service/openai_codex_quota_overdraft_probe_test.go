@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,14 +25,21 @@ type codexOverdraftProbeRepoStub struct {
 
 type codexOverdraftRuntimeBlockerStub struct {
 	clearCalls int
-	blockCalls int
-	blockUntil time.Time
 }
 
-func (b *codexOverdraftRuntimeBlockerStub) BlockAccountScheduling(_ *Account, until time.Time, _ string) {
-	b.blockCalls++
-	b.blockUntil = until
+type codexOverdraftClaimConflictRepoStub struct {
+	*codexOverdraftProbeRepoStub
 }
+
+func (r *codexOverdraftClaimConflictRepoStub) ClaimCodexQuotaOverdraftProbe(
+	context.Context,
+	int64,
+	*CodexQuotaOverdraftProbeState,
+) (bool, error) {
+	return false, nil
+}
+
+func (b *codexOverdraftRuntimeBlockerStub) BlockAccountScheduling(*Account, time.Time, string) {}
 
 func (b *codexOverdraftRuntimeBlockerStub) ClearAccountSchedulingBlock(int64) {
 	b.clearCalls++
@@ -89,7 +97,7 @@ func newCodexOverdraftProbeTestAccount(now time.Time) *Account {
 	}
 }
 
-func TestCodexQuotaOverdraftProbeModelsMatchPluginRotation(t *testing.T) {
+func TestCodexQuotaOverdraftProbeUsesOnePreferredModel(t *testing.T) {
 	models := codexQuotaOverdraftProbeModels("gpt-5.4")
 	require.Equal(t, []string{"gpt-5.4", "gpt-5.5", "gpt-5.4-mini"}, models)
 
@@ -97,7 +105,7 @@ func TestCodexQuotaOverdraftProbeModelsMatchPluginRotation(t *testing.T) {
 	for attempt := 0; attempt < codexQuotaOverdraftProbeAttemptLimit; attempt++ {
 		got = append(got, models[attempt%len(models)])
 	}
-	require.Equal(t, []string{"gpt-5.4", "gpt-5.5", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5"}, got)
+	require.Equal(t, []string{"gpt-5.4"}, got)
 }
 
 func TestCodexQuotaOverdraftSignalsKeepFiveHourAndSevenDayCyclesSeparate(t *testing.T) {
@@ -122,18 +130,15 @@ func TestCodexQuotaOverdraftSignalsKeepFiveHourAndSevenDayCyclesSeparate(t *test
 	require.Contains(t, multiple.CycleKey, "|7d:")
 }
 
-func TestCodexQuotaOverdraftProbePassesOnAnySuccessfulAttempt(t *testing.T) {
+func TestCodexQuotaOverdraftSingleProbePassesOnSuccess(t *testing.T) {
 	now := time.Date(2026, time.August, 13, 14, 0, 0, 0, time.UTC)
 	account := newCodexOverdraftProbeTestAccount(now)
 	repo := &codexOverdraftProbeRepoStub{account: account}
 	coordinator := &CodexQuotaOverdraftCoordinator{accountRepo: repo, now: func() time.Time { return now }}
-	models := make([]string, 0, 3)
+	models := make([]string, 0, 1)
 	coordinator.probeAttemptForTest = func(_ context.Context, _ *Account, model string) codexQuotaOverdraftProbeResult {
 		models = append(models, model)
-		if len(models) == 3 {
-			return codexQuotaOverdraftProbeResult{Status: "available", ReasonCode: "model_response_ok", StatusCode: http.StatusOK, Model: model}
-		}
-		return codexQuotaOverdraftProbeResult{Status: "retry", ReasonCode: "quota_limited", StatusCode: http.StatusTooManyRequests, Model: model}
+		return codexQuotaOverdraftProbeResult{Status: "available", ReasonCode: "model_response_ok", StatusCode: http.StatusOK, Model: model}
 	}
 	signal, exhausted := codexQuotaOverdraftSignalFromAccount(account, nil, now)
 	require.True(t, exhausted)
@@ -142,13 +147,13 @@ func TestCodexQuotaOverdraftProbePassesOnAnySuccessfulAttempt(t *testing.T) {
 	coordinator.runProbePlan(account.ID, signal, "gpt-5.4", state)
 
 	require.Equal(t, codexQuotaOverdraftProbePassed, state.Status)
-	require.Equal(t, 3, state.Attempts)
-	require.Equal(t, []string{"gpt-5.4", "gpt-5.5", "gpt-5.4-mini"}, models)
+	require.Equal(t, 1, state.Attempts)
+	require.Equal(t, []string{"gpt-5.4"}, models)
 	require.NotNil(t, state.FiveHourStartedAt)
 	require.Zero(t, repo.tempPauseCalls)
 }
 
-func TestCodexQuotaOverdraftProbeRequiresFiveExplicitQuotaFailures(t *testing.T) {
+func TestCodexQuotaOverdraftSingleProbeQuotaFailurePauses(t *testing.T) {
 	now := time.Date(2026, time.August, 13, 14, 0, 0, 0, time.UTC)
 	account := newCodexOverdraftProbeTestAccount(now)
 	repo := &codexOverdraftProbeRepoStub{account: account}
@@ -171,6 +176,153 @@ func TestCodexQuotaOverdraftProbeRequiresFiveExplicitQuotaFailures(t *testing.T)
 	require.False(t, codexQuotaOverdraftSchedulingAllowed(account, now), "同周期确认失败后不得继续绕过限额")
 }
 
+func TestCodexQuotaOverdraftBusinessSuccessAtExhaustionPassesWithoutProbe(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 14, 0, 0, 0, time.UTC)
+	account := newCodexOverdraftProbeTestAccount(now)
+	repo := &codexOverdraftProbeRepoStub{account: account}
+	coordinator := &CodexQuotaOverdraftCoordinator{accountRepo: repo, now: func() time.Time { return now }}
+
+	coordinator.observeBusinessSuccess(account, "gpt-5.4")
+
+	state, ok := codexQuotaOverdraftStateFromAccount(account)
+	require.True(t, ok)
+	require.Equal(t, codexQuotaOverdraftProbePassed, state.Status)
+	require.Equal(t, "business_request_ok", state.ReasonCode)
+	require.Equal(t, "gpt-5.4", state.Model)
+	require.Equal(t, 1, state.Attempts)
+	require.Equal(t, 1, state.Limit)
+	require.NotNil(t, state.FiveHourStartedAt)
+}
+
+func TestCodexQuotaOverdraftBusinessSuccessCannotReplaceFailedCycle(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 14, 0, 0, 0, time.UTC)
+	account := newCodexOverdraftProbeTestAccount(now)
+	signal, _ := codexQuotaOverdraftSignalFromAccount(account, nil, now)
+	failed := newCodexOverdraftPendingState(signal, now)
+	failed.Status = codexQuotaOverdraftProbeFailed
+	failed.ReasonCode = "business_quota_limited"
+	account.Extra[CodexQuotaOverdraftProbeExtraKey] = failed
+	repo := &codexOverdraftProbeRepoStub{account: account}
+	coordinator := &CodexQuotaOverdraftCoordinator{accountRepo: repo, now: func() time.Time { return now }}
+
+	coordinator.observeBusinessSuccess(account, "gpt-5.4")
+
+	state, ok := codexQuotaOverdraftStateFromAccount(account)
+	require.True(t, ok)
+	require.Equal(t, codexQuotaOverdraftProbeFailed, state.Status)
+	require.Empty(t, repo.states)
+}
+
+func TestCodexQuotaOverdraftInjectedBusinessQuota429FailsImmediately(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 14, 0, 0, 0, time.UTC)
+	account := newCodexOverdraftProbeTestAccount(now)
+	repo := &codexOverdraftProbeRepoStub{account: account}
+	coordinator := &CodexQuotaOverdraftCoordinator{
+		accountRepo:  repo,
+		httpUpstream: &queuedHTTPUpstream{},
+		cfg: &config.Config{Gateway: config.GatewayConfig{
+			CodexQuotaOverdraftEnabled: true,
+		}},
+		now: func() time.Time { return now },
+	}
+	ctx := WithCodexQuotaOverdraftScheduling(context.Background())
+	markCodexQuotaOverdraftInjected(ctx, account.ID)
+
+	handled := coordinator.HandleQuota429(
+		ctx,
+		account,
+		nil,
+		[]byte(`{"error":{"type":"usage_limit_reached"}}`),
+		"gpt-5.4",
+	)
+
+	require.True(t, handled)
+	state, ok := codexQuotaOverdraftStateFromAccount(account)
+	require.True(t, ok)
+	require.Equal(t, codexQuotaOverdraftProbeFailed, state.Status)
+	require.Equal(t, "business_quota_limited", state.ReasonCode)
+	require.Equal(t, 1, repo.tempPauseCalls)
+}
+
+func TestCodexQuotaOverdraftTransient429DoesNotEnterQuotaCooldown(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 14, 0, 0, 0, time.UTC)
+	account := newCodexOverdraftProbeTestAccount(now)
+	repo := &codexOverdraftProbeRepoStub{account: account}
+	coordinator := &CodexQuotaOverdraftCoordinator{
+		accountRepo:  repo,
+		httpUpstream: &queuedHTTPUpstream{},
+		cfg: &config.Config{Gateway: config.GatewayConfig{
+			CodexQuotaOverdraftEnabled: true,
+		}},
+		now: func() time.Time { return now },
+	}
+	ctx := WithCodexQuotaOverdraftScheduling(context.Background())
+	markCodexQuotaOverdraftInjected(ctx, account.ID)
+	headers := http.Header{}
+	headers.Set("x-codex-primary-used-percent", "100")
+	headers.Set("x-codex-primary-reset-after-seconds", "3600")
+	headers.Set("x-codex-primary-window-minutes", "300")
+
+	handled := coordinator.HandleQuota429(
+		ctx,
+		account,
+		headers,
+		[]byte(`{"error":{"type":"rate_limit_exceeded","message":"too many requests"}}`),
+		"gpt-5.4",
+	)
+
+	require.False(t, handled)
+	require.Zero(t, repo.tempPauseCalls)
+	_, hasState := codexQuotaOverdraftStateFromAccount(account)
+	require.False(t, hasState)
+}
+
+func TestCodexQuotaOverdraftBusinessFailureReloadsAfterClaimConflict(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 14, 0, 0, 0, time.UTC)
+	latest := newCodexOverdraftProbeTestAccount(now)
+	signal, _ := codexQuotaOverdraftSignalFromAccount(latest, nil, now)
+	passed := newCodexOverdraftPendingState(signal, now)
+	passed.Status = codexQuotaOverdraftProbePassed
+	latest.Extra[CodexQuotaOverdraftProbeExtraKey] = passed
+	baseRepo := &codexOverdraftProbeRepoStub{account: latest}
+	repo := &codexOverdraftClaimConflictRepoStub{codexOverdraftProbeRepoStub: baseRepo}
+	coordinator := &CodexQuotaOverdraftCoordinator{accountRepo: repo, now: func() time.Time { return now }}
+	stale := newCodexOverdraftProbeTestAccount(now)
+	delete(stale.Extra, CodexQuotaOverdraftProbeExtraKey)
+
+	handled := coordinator.finishBusinessQuotaFailure(stale, signal, "gpt-5.4")
+
+	require.True(t, handled)
+	state, ok := codexQuotaOverdraftStateFromAccount(latest)
+	require.True(t, ok)
+	require.Equal(t, codexQuotaOverdraftProbeFailed, state.Status)
+	require.Equal(t, 1, baseRepo.tempPauseCalls)
+}
+
+func TestCodexQuotaOverdraftFailedPauseIsIdempotentForPersistedCycle(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 14, 0, 0, 0, time.UTC)
+	account := newCodexOverdraftProbeTestAccount(now)
+	recoverAt := now.Add(5 * time.Hour)
+	state := &CodexQuotaOverdraftProbeState{
+		Status:      codexQuotaOverdraftProbeFailed,
+		QuotaWindow: "5h",
+		CycleKey:    "5h:" + formatCodexOverdraftUnix(recoverAt),
+		Attempts:    codexQuotaOverdraftProbeAttemptLimit,
+		Limit:       codexQuotaOverdraftProbeAttemptLimit,
+		StartedAt:   now,
+		RecoverAt:   codexQuotaOverdraftTimePtr(recoverAt),
+	}
+	account.Extra[CodexQuotaOverdraftProbeExtraKey] = state
+	account.TempUnschedulableUntil = codexQuotaOverdraftTimePtr(recoverAt)
+	account.TempUnschedulableReason = BuildTempUnschedReasonPayload(codexQuotaOverdraftPauseSource, "quota exhausted")
+	repo := &codexOverdraftProbeRepoStub{account: account}
+	coordinator := &CodexQuotaOverdraftCoordinator{accountRepo: repo, now: func() time.Time { return now }}
+
+	require.True(t, coordinator.ensureFailedPause(account, state))
+	require.Zero(t, repo.tempPauseCalls)
+	require.Empty(t, repo.states)
+}
+
 func TestCodexQuotaOverdraftProbeInconclusiveNeverPauses(t *testing.T) {
 	now := time.Date(2026, time.August, 13, 14, 0, 0, 0, time.UTC)
 	for _, result := range []codexQuotaOverdraftProbeResult{
@@ -189,10 +341,34 @@ func TestCodexQuotaOverdraftProbeInconclusiveNeverPauses(t *testing.T) {
 
 			require.Equal(t, codexQuotaOverdraftProbeInconclusive, state.Status)
 			require.Equal(t, 1, state.Attempts)
-			require.NotNil(t, state.RetryAt)
+			require.Nil(t, state.RetryAt)
+			require.Zero(t, state.RetryCount)
 			require.Zero(t, repo.tempPauseCalls)
 		})
 	}
+}
+
+func TestCodexQuotaOverdraftModelNotFoundIsInconclusiveWithoutRetry(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 14, 0, 0, 0, time.UTC)
+	account := newCodexOverdraftProbeTestAccount(now)
+	repo := &codexOverdraftProbeRepoStub{account: account}
+	coordinator := &CodexQuotaOverdraftCoordinator{accountRepo: repo, now: func() time.Time { return now }}
+	models := make([]string, 0, codexQuotaOverdraftProbeAttemptLimit)
+	coordinator.probeAttemptForTest = func(_ context.Context, _ *Account, model string) codexQuotaOverdraftProbeResult {
+		models = append(models, model)
+		return codexQuotaOverdraftProbeResult{Status: "retry", ReasonCode: "model_not_found", StatusCode: http.StatusNotFound, Model: model}
+	}
+	signal, _ := codexQuotaOverdraftSignalFromAccount(account, nil, now)
+	state := newCodexOverdraftPendingState(signal, now)
+
+	coordinator.runProbePlan(account.ID, signal, "gpt-5.4", state)
+
+	require.Equal(t, codexQuotaOverdraftProbeInconclusive, state.Status)
+	require.Equal(t, codexQuotaOverdraftProbeAttemptLimit, state.Attempts)
+	require.Zero(t, state.RetryCount)
+	require.Nil(t, state.RetryAt)
+	require.Equal(t, []string{"gpt-5.4"}, models)
+	require.Zero(t, repo.tempPauseCalls)
 }
 
 func TestCodexQuotaOverdraftNewWindowPreservesExistingWindowBaseline(t *testing.T) {
@@ -286,10 +462,14 @@ func TestCodexQuotaOverdraftAvailableStateClearsMismatchedStaleRateLimit(t *test
 			repo := &codexOverdraftProbeRepoStub{account: account}
 			blocker := &codexOverdraftRuntimeBlockerStub{}
 			coordinator := &CodexQuotaOverdraftCoordinator{accountRepo: repo, runtimeBlocker: blocker}
+			signal, _ := codexQuotaOverdraftSignalFromAccount(account, nil, now)
 			state := &CodexQuotaOverdraftProbeState{
 				Status:            status,
+				CycleKey:          signal.CycleKey,
+				QuotaWindow:       signal.Window,
 				ObservedRateLimit: codexQuotaOverdraftTimePtr(now.Add(time.Hour)),
 			}
+			account.Extra[CodexQuotaOverdraftProbeExtraKey] = state
 
 			coordinator.clearQuotaPause(account.ID, state)
 
@@ -319,52 +499,6 @@ func TestCodexQuotaOverdraftFailedStateDoesNotClearRateLimit(t *testing.T) {
 	require.Zero(t, blocker.clearCalls)
 }
 
-func TestCodexQuotaOverdraftPassedStateClearsStaleRateLimitDuringObserve(t *testing.T) {
-	now := time.Date(2026, time.August, 14, 10, 0, 0, 0, time.UTC)
-	account := newCodexOverdraftProbeTestAccount(now)
-	signal, exhausted := codexQuotaOverdraftSignalFromAccount(account, nil, now)
-	require.True(t, exhausted)
-	account.RateLimitResetAt = codexQuotaOverdraftTimePtr(now.Add(2 * time.Hour))
-	account.Extra[CodexQuotaOverdraftProbeExtraKey] = &CodexQuotaOverdraftProbeState{
-		Status:            codexQuotaOverdraftProbePassed,
-		QuotaWindow:       signal.Window,
-		CycleKey:          signal.CycleKey,
-		RecoverAt:         codexQuotaOverdraftTimePtr(signal.RecoverAt),
-		FiveHourRecoverAt: cloneTimePtr(signal.FiveHourRecoverAt),
-	}
-	repo := &codexOverdraftProbeRepoStub{account: account}
-	blocker := &codexOverdraftRuntimeBlockerStub{}
-	coordinator := &CodexQuotaOverdraftCoordinator{accountRepo: repo, runtimeBlocker: blocker, now: func() time.Time { return now }}
-
-	coordinator.observeAccount(account, "gpt-5.4")
-
-	require.Equal(t, 1, repo.clearLimitCalls)
-	require.Nil(t, account.RateLimitResetAt)
-	require.Equal(t, 1, blocker.clearCalls)
-}
-
-func TestCodexQuotaOverdraftQuota429TemporarilyBlocksScheduling(t *testing.T) {
-	now := time.Date(2026, time.August, 14, 10, 0, 0, 0, time.UTC)
-	account := newCodexOverdraftProbeTestAccount(now)
-	signal, exhausted := codexQuotaOverdraftSignalFromAccount(account, nil, now)
-	require.True(t, exhausted)
-	repo := &codexOverdraftProbeRepoStub{account: account}
-	blocker := &codexOverdraftRuntimeBlockerStub{}
-	coordinator := &CodexQuotaOverdraftCoordinator{
-		accountRepo:    repo,
-		runtimeBlocker: blocker,
-		now:            func() time.Time { return now },
-	}
-
-	coordinator.pauseForQuota429(account, signal)
-
-	require.Equal(t, 1, repo.tempPauseCalls)
-	require.True(t, account.TempUnschedulableUntil.Equal(signal.RecoverAt))
-	require.True(t, codexQuotaOverdraftPauseReason(account.TempUnschedulableReason))
-	require.Equal(t, 1, blocker.blockCalls)
-	require.Equal(t, signal.RecoverAt, blocker.blockUntil)
-}
-
 func TestClassifyCodexQuotaOverdraftProbeResponses(t *testing.T) {
 	status, reason := classifyCodexQuotaOverdraftProbe(http.StatusOK, nil, []byte(`data: {"type":"response.completed"}`))
 	require.Equal(t, "available", status)
@@ -374,6 +508,26 @@ func TestClassifyCodexQuotaOverdraftProbeResponses(t *testing.T) {
 	require.Equal(t, "retry", status)
 	require.Equal(t, "quota_limited", reason)
 
+	status, reason = classifyCodexQuotaOverdraftProbe(http.StatusTooManyRequests, nil, []byte(`{"error":{"code":"weekly_limit_reached"}}`))
+	require.Equal(t, "retry", status)
+	require.Equal(t, "quota_limited", reason)
+
+	status, reason = classifyCodexQuotaOverdraftProbe(http.StatusTooManyRequests, nil, []byte(`{"rate_limit":{"allowed":false,"limit_reached":true}}`))
+	require.Equal(t, "retry", status)
+	require.Equal(t, "quota_limited", reason)
+
+	status, reason = classifyCodexQuotaOverdraftProbe(http.StatusTooManyRequests, nil, []byte(`{"error":{"type":"rate_limit_exceeded","message":"too many requests"}}`))
+	require.Equal(t, "inconclusive", status)
+	require.Equal(t, "transient_failure", reason)
+
+	headers := http.Header{}
+	headers.Set("x-codex-primary-used-percent", "100")
+	headers.Set("x-codex-primary-reset-after-seconds", "3600")
+	headers.Set("x-codex-primary-window-minutes", "300")
+	status, reason = classifyCodexQuotaOverdraftProbe(http.StatusTooManyRequests, headers, []byte(`{"error":{"type":"rate_limit_exceeded","message":"too many requests"}}`))
+	require.Equal(t, "inconclusive", status)
+	require.Equal(t, "transient_failure", reason)
+
 	status, reason = classifyCodexQuotaOverdraftProbe(http.StatusServiceUnavailable, nil, nil)
 	require.Equal(t, "inconclusive", status)
 	require.Equal(t, "upstream_unavailable", reason)
@@ -381,6 +535,10 @@ func TestClassifyCodexQuotaOverdraftProbeResponses(t *testing.T) {
 	status, reason = classifyCodexQuotaOverdraftProbe(http.StatusUnauthorized, nil, nil)
 	require.Equal(t, "authentication_failed", status)
 	require.Equal(t, "authentication_failed", reason)
+
+	status, reason = classifyCodexQuotaOverdraftProbe(http.StatusNotFound, nil, []byte(`{"detail":"model not found"}`))
+	require.Equal(t, "retry", status)
+	require.Equal(t, "model_not_found", reason)
 
 	status, reason = classifyCodexQuotaOverdraftProbe(http.StatusOK, nil, []byte(`data: {"type":"response.failed"}\ndata: {"type":"response.completed"}`))
 	require.Equal(t, "retry", status)

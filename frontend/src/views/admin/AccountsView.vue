@@ -20,40 +20,46 @@
               <!-- Auto Refresh Dropdown -->
               <div class="relative" ref="autoRefreshDropdownRef">
                 <button
-                  @click="
-                    showAutoRefreshDropdown = !showAutoRefreshDropdown;
-                    showAccountToolsDropdown = false
-                  "
+                  ref="autoRefreshTriggerRef"
+                  @click="toggleAutoRefreshDropdown"
                   class="btn btn-secondary h-9 w-9 justify-center px-0"
                   :title="t('admin.accounts.autoRefresh')"
                   :aria-label="t('admin.accounts.autoRefresh')"
+                  :aria-expanded="showAutoRefreshDropdown"
                 >
                   <Icon name="refresh" size="sm" :class="[autoRefreshEnabled ? 'animate-spin' : '']" />
                 </button>
-                <div
-                  v-if="showAutoRefreshDropdown"
-                  class="absolute right-0 z-50 mt-2 w-56 origin-top-right rounded-lg border border-gray-200 bg-white shadow-lg dark:border-dark-700 dark:bg-dark-800"
-                >
-                  <div class="p-2">
-                    <button
-                      @click="setAutoRefreshEnabled(!autoRefreshEnabled)"
-                      class="flex w-full items-center justify-between rounded-md px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-dark-700"
+                <Teleport to="body">
+                  <div
+                    v-if="showAutoRefreshDropdown"
+                    class="fixed z-[9999] origin-top-right overflow-hidden rounded-lg border border-gray-200 bg-white shadow-xl dark:border-dark-700 dark:bg-dark-800"
+                    :style="autoRefreshDropdownStyle"
+                    @click.stop
+                  >
+                    <div
+                      class="overflow-y-auto p-2"
+                      :style="{ maxHeight: `${autoRefreshDropdownPosition.maxHeight}px` }"
                     >
-                      <span>{{ t('admin.accounts.enableAutoRefresh') }}</span>
-                      <Icon v-if="autoRefreshEnabled" name="check" size="sm" class="text-primary-500" />
-                    </button>
-                    <div class="my-1 border-t border-gray-100 dark:border-dark-700"></div>
-                    <button
-                      v-for="sec in autoRefreshIntervals"
-                      :key="sec"
-                      @click="setAutoRefreshInterval(sec)"
-                      class="flex w-full items-center justify-between rounded-md px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-dark-700"
-                    >
-                      <span>{{ autoRefreshIntervalLabel(sec) }}</span>
-                      <Icon v-if="autoRefreshIntervalSeconds === sec" name="check" size="sm" class="text-primary-500" />
-                    </button>
+                      <button
+                        @click="setAutoRefreshEnabled(!autoRefreshEnabled)"
+                        class="flex w-full items-center justify-between rounded-md px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-dark-700"
+                      >
+                        <span>{{ t('admin.accounts.enableAutoRefresh') }}</span>
+                        <Icon v-if="autoRefreshEnabled" name="check" size="sm" class="text-primary-500" />
+                      </button>
+                      <div class="my-1 border-t border-gray-100 dark:border-dark-700"></div>
+                      <button
+                        v-for="sec in autoRefreshIntervals"
+                        :key="sec"
+                        @click="setAutoRefreshInterval(sec)"
+                        class="flex w-full items-center justify-between rounded-md px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-dark-700"
+                      >
+                        <span>{{ autoRefreshIntervalLabel(sec) }}</span>
+                        <Icon v-if="autoRefreshIntervalSeconds === sec" name="check" size="sm" class="text-primary-500" />
+                      </button>
+                    </div>
                   </div>
-                </div>
+                </Teleport>
               </div>
 
               <!-- More Tools Dropdown -->
@@ -682,6 +688,20 @@ const sortState = reactive<AccountSortState>(loadInitialAccountSortState())
 // Auto refresh settings
 const showAutoRefreshDropdown = ref(false)
 const autoRefreshDropdownRef = ref<HTMLElement | null>(null)
+const autoRefreshTriggerRef = ref<HTMLElement | null>(null)
+const autoRefreshDropdownPosition = reactive({
+  top: null as number | null,
+  bottom: null as number | null,
+  left: 16,
+  width: 224,
+  maxHeight: 0
+})
+const autoRefreshDropdownStyle = computed(() => ({
+  top: autoRefreshDropdownPosition.top == null ? 'auto' : `${autoRefreshDropdownPosition.top}px`,
+  bottom: autoRefreshDropdownPosition.bottom == null ? 'auto' : `${autoRefreshDropdownPosition.bottom}px`,
+  left: `${autoRefreshDropdownPosition.left}px`,
+  width: `${autoRefreshDropdownPosition.width}px`
+}))
 const AUTO_REFRESH_STORAGE_KEY = 'account-auto-refresh'
 const autoRefreshIntervals = [5, 10, 15, 30] as const
 const autoRefreshEnabled = ref(false)
@@ -1028,6 +1048,26 @@ const setAutoRefreshInterval = (seconds: (typeof autoRefreshIntervals)[number]) 
   if (autoRefreshEnabled.value) {
     autoRefreshCountdown.value = seconds
   }
+}
+
+const updateAutoRefreshDropdownPosition = () => {
+  const trigger = autoRefreshTriggerRef.value
+  if (!trigger) return
+
+  const position = getFloatingPanelPosition(
+    trigger.getBoundingClientRect(),
+    document.documentElement.clientWidth || window.innerWidth,
+    window.innerHeight,
+    { maxWidth: autoRefreshDropdownPosition.width, maxHeightRatio: 0.7 }
+  )
+  Object.assign(autoRefreshDropdownPosition, position)
+}
+
+const toggleAutoRefreshDropdown = () => {
+  const nextVisible = !showAutoRefreshDropdown.value
+  showAccountToolsDropdown.value = false
+  if (nextVisible) updateAutoRefreshDropdownPosition()
+  showAutoRefreshDropdown.value = nextVisible
 }
 
 const toggleColumn = (key: string) => {
@@ -2470,10 +2510,12 @@ const proxyExpiryText = (p: AccountProxy): string => {
 const handleScroll = () => {
   menu.show = false
   if (showAccountToolsDropdown.value) updateAccountToolsDropdownPosition()
+  if (showAutoRefreshDropdown.value) updateAutoRefreshDropdownPosition()
 }
 
 const handleViewportResize = () => {
   if (showAccountToolsDropdown.value) updateAccountToolsDropdownPosition()
+  if (showAutoRefreshDropdown.value) updateAutoRefreshDropdownPosition()
 }
 
 // 点击外部关闭顶部下拉菜单

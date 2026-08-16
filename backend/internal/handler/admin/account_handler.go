@@ -2577,15 +2577,19 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 
 	// Handle OpenAI accounts
 	if account.IsOpenAI() {
+		defaultModels := openai.DefaultModels
+		if account.IsOpenAIOAuth() {
+			defaultModels = openai.CodexOAuthDefaultModels
+		}
 		// OpenAI 自动透传会绕过常规模型改写，测试/模型列表也应回落到默认模型集。
 		if account.IsOpenAIPassthroughEnabled() {
-			response.Success(c, openai.DefaultModels)
+			response.Success(c, defaultModels)
 			return
 		}
 
 		mapping := account.GetModelMapping()
 		if len(mapping) == 0 {
-			response.Success(c, openai.DefaultModels)
+			response.Success(c, defaultModels)
 			return
 		}
 
@@ -2593,7 +2597,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		var models []openai.Model
 		for requestedModel := range mapping {
 			var found bool
-			for _, dm := range openai.DefaultModels {
+			for _, dm := range defaultModels {
 				if dm.ID == requestedModel {
 					models = append(models, dm)
 					found = true

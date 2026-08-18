@@ -72,6 +72,10 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	if s == nil || account == nil {
 		return false
 	}
+	// Team 联动熔断必须先于 model-not-found 与账户级临时不可调度规则的早退。
+	if s.rateLimitService != nil {
+		s.rateLimitService.maybeHandleOpenAITeamLinkedError(stateCtx, account, statusCode, responseBody)
+	}
 	stateCtx = withTempUnschedulableModel(stateCtx, canonicalModel)
 	preferredModel := ""
 	if len(canonicalModel) > 0 {

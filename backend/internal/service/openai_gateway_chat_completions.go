@@ -270,9 +270,16 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
 
-	if promptCacheKey != "" {
+	if promptCacheKey != "" && !codexPrivacyEnabled(account) {
 		apiKeyID := getAPIKeyIDFromContext(c)
 		upstreamReq.Header.Set("session_id", generateSessionUUID(isolateOpenAISessionID(apiKeyID, promptCacheKey)))
+	}
+	if codexPrivacyEnabled(account) {
+		// Chat Completions compatibility adds a legacy session header after the
+		// shared Responses builder. Re-run the final invariant so that raw
+		// prompt-cache/session values cannot bypass the OAuth privacy policy.
+		privacyIDs := ensureStagedCodexFingerprintIDs(c, account, s.codexFingerprintSecret())
+		sanitizeCodexPrivacyHeaders(upstreamReq.Header, account, privacyIDs, responsesBody, s.codexFingerprintSecret())
 	}
 
 	// 7. Send request
@@ -439,10 +446,11 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 		// cyber_policy 致命不可重试：不 failover，以 Chat Completions 错误格式回写（F4），
 		// 标记供 handler 事后写风控/邮件/tokens=0 用量行。
 		if hit, code, msg := detectOpenAICyberPolicy(payload); hit {
+			safeMsg := codexPrivacyUpstreamMessage(account, http.StatusOK, msg)
 			MarkOpsCyberPolicy(c, CyberPolicyMark{
 				Code:           code,
-				Message:        msg,
-				Body:           truncateString(string(payload), 4096),
+				Message:        safeMsg,
+				Body:           codexPrivacyBodyMarker(account, payload, 4096),
 				UpstreamStatus: http.StatusOK,
 				UpstreamInTok:  usage.InputTokens,
 				UpstreamOutTok: usage.OutputTokens,
@@ -626,13 +634,14 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			payloadBytes := []byte(payload)
 			message := extractOpenAISSEErrorMessage(payloadBytes)
 			if hit, code, msg := detectOpenAICyberPolicy(payloadBytes); hit {
+				safeMsg := codexPrivacyUpstreamMessage(account, http.StatusOK, msg)
 				// cyber_policy 致命且不可重试：不 failover。下发标准 error chunk +
 				// [DONE]，让程序化客户端可感知并停止重试（F4）；标记供 handler 事后
 				// 写风控/邮件。
 				MarkOpsCyberPolicy(c, CyberPolicyMark{
 					Code:           code,
-					Message:        msg,
-					Body:           truncateString(string(payloadBytes), 4096),
+					Message:        safeMsg,
+					Body:           codexPrivacyBodyMarker(account, payloadBytes, 4096),
 					UpstreamStatus: http.StatusOK,
 					UpstreamInTok:  usage.InputTokens,
 					UpstreamOutTok: usage.OutputTokens,

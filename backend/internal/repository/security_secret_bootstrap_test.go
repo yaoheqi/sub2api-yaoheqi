@@ -62,6 +62,20 @@ func TestEnsureBootstrapSecretsGenerateAndPersistJWTSecret(t *testing.T) {
 	stored, err := client.SecuritySecret.Query().Where(securitysecret.KeyEQ(securitySecretKeyJWT)).Only(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, cfg.JWT.Secret, stored.Value)
+	fingerprint, err := client.SecuritySecret.Query().Where(securitysecret.KeyEQ(securitySecretKeyCodexFingerprint)).Only(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, cfg.Gateway.CodexFingerprintSecret, fingerprint.Value)
+}
+
+func TestEnsureBootstrapSecretsFingerprintSecretIsStableAcrossLoads(t *testing.T) {
+	client := newSecuritySecretTestClient(t)
+	first := &config.Config{}
+	require.NoError(t, ensureBootstrapSecrets(context.Background(), client, first))
+	require.NotEmpty(t, first.Gateway.CodexFingerprintSecret)
+
+	second := &config.Config{}
+	require.NoError(t, ensureBootstrapSecrets(context.Background(), client, second))
+	require.Equal(t, first.Gateway.CodexFingerprintSecret, second.Gateway.CodexFingerprintSecret)
 }
 
 func TestEnsureBootstrapSecretsLoadExistingJWTSecret(t *testing.T) {

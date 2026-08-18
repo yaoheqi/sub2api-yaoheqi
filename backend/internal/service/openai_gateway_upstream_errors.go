@@ -47,14 +47,20 @@ func logOpenAIInstructionsRequiredDebug(
 		userAgent = strings.TrimSpace(c.GetHeader("User-Agent"))
 		originator = strings.TrimSpace(c.GetHeader("originator"))
 	}
+	loggedMessage := msg
+	loggedUserAgent := userAgent
+	if codexPrivacyEnabled(account) {
+		loggedMessage = hashSensitiveValueForLog(msg)
+		loggedUserAgent = hashSensitiveValueForLog(userAgent)
+	}
 
 	fields := []zap.Field{
 		zap.String("component", "service.openai_gateway"),
 		zap.Int64("account_id", accountID),
 		zap.String("account_name", accountName),
 		zap.Int("upstream_status_code", upstreamStatusCode),
-		zap.String("upstream_error_message", msg),
-		zap.String("request_user_agent", userAgent),
+		zap.String("upstream_error_message", loggedMessage),
+		zap.String("request_user_agent", loggedUserAgent),
 		zap.Bool("codex_official_client_match", openai.IsCodexOfficialClientByHeaders(userAgent, originator)),
 	}
 	fields = appendCodexCLIOnlyRejectedRequestFields(fields, c, requestBody)
@@ -327,13 +333,24 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 	// 当前请求恒透传（需求1）；标记供 handler 事后写风控/邮件。400 cyber 不可 failover
 	// （shouldFailoverUpstreamError(400)=false），故走到此处即可安全早返回。
 	if hit, code, cyberMsg := detectOpenAICyberPolicy(body); hit {
+		safeCyberMsg := codexPrivacyUpstreamMessage(account, resp.StatusCode, cyberMsg)
 		MarkOpsCyberPolicy(c, CyberPolicyMark{
 			Code:           code,
-			Message:        cyberMsg,
-			Body:           truncateString(string(body), 4096),
+			Message:        safeCyberMsg,
+			Body:           codexPrivacyBodyMarker(account, body, 4096),
 			UpstreamStatus: resp.StatusCode,
 		})
-		setOpsUpstreamError(c, resp.StatusCode, cyberMsg, truncateString(string(body), 2048))
+		setOpsUpstreamError(c, resp.StatusCode, safeCyberMsg, codexPrivacyBodyMarker(account, body, 2048))
+		if codexPrivacyEnabled(account) {
+			MarkResponseCommitted(c)
+			c.JSON(resp.StatusCode, gin.H{
+				"error": gin.H{
+					"type":    "upstream_error",
+					"message": safeCyberMsg,
+				},
+			})
+			return nil, fmt.Errorf("openai cyber_policy: status=%d", resp.StatusCode)
+		}
 		writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 		contentType := resp.Header.Get("Content-Type")
 		if contentType == "" {
@@ -361,18 +378,12 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
-	upstreamDetail := ""
-	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-		maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
-		if maxBytes <= 0 {
-			maxBytes = 2048
-		}
-		upstreamDetail = truncateString(string(body), maxBytes)
-	}
+	upstreamMsg = codexPrivacyUpstreamMessage(account, resp.StatusCode, upstreamMsg)
+	upstreamDetail := s.codexPrivacyUpstreamErrorDetail(account, body)
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 	logOpenAIInstructionsRequiredDebug(ctx, c, account, resp.StatusCode, upstreamMsg, requestBody, body)
 
-	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody && !codexPrivacyEnabled(account) {
 		logger.LegacyPrintf("service.openai_gateway",
 			"OpenAI upstream error %d (account=%d platform=%s type=%s): %s",
 			resp.StatusCode,
@@ -398,7 +409,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		return nil, newOpenAIUpstreamFailoverError(
 			resp.StatusCode,
 			resp.Header,
-			body,
+			codexPrivacyUpstreamErrorBody(account, resp.StatusCode, body),
 			upstreamMsg,
 			false,
 		)
@@ -413,6 +424,9 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		"upstream_error",
 		"Upstream request failed",
 	); matched {
+		if codexPrivacyEnabled(account) {
+			errMsg = "Upstream request failed"
+		}
 		MarkResponseCommitted(c)
 		c.JSON(status, gin.H{
 			"error": gin.H{
@@ -481,7 +495,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 	if shouldDisable {
 		return nil, &UpstreamFailoverError{
 			StatusCode:             resp.StatusCode,
-			ResponseBody:           body,
+			ResponseBody:           codexPrivacyUpstreamErrorBody(account, resp.StatusCode, body),
 			RetryableOnSameAccount: false,
 		}
 	}
@@ -499,7 +513,16 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 	// 回真实状态码 + invalid_request_error + 真实 message；/v1/images 还额外透传
 	// code/param。原生 Responses 是唯一漏掉的一条。
 	if isOpenAIDeterministicClientError(resp.StatusCode) {
-		writeOpenAIUpstreamClientError(c, resp.StatusCode, body, upstreamMsg)
+		if codexPrivacyEnabled(account) {
+			c.JSON(resp.StatusCode, gin.H{
+				"error": gin.H{
+					"type":    openAIUpstreamClientErrorFallbackType,
+					"message": upstreamMsg,
+				},
+			})
+		} else {
+			writeOpenAIUpstreamClientError(c, resp.StatusCode, body, upstreamMsg)
+		}
 		if upstreamMsg == "" {
 			return nil, fmt.Errorf("upstream error: %d", resp.StatusCode)
 		}
@@ -573,14 +596,15 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 	// 安全策略拦截，不冷却账号，故标记后直接以兼容格式回写错误并返回，跳过下方
 	// handleOpenAIAccountUpstreamError（避免自定义 temp-unschedulable 规则误冷却）。
 	if hit, code, cyberMsg := detectOpenAICyberPolicy(body); hit {
+		safeCyberMsg := codexPrivacyUpstreamMessage(account, resp.StatusCode, cyberMsg)
 		MarkOpsCyberPolicy(c, CyberPolicyMark{
 			Code:           code,
-			Message:        cyberMsg,
-			Body:           truncateString(string(body), 4096),
+			Message:        safeCyberMsg,
+			Body:           codexPrivacyBodyMarker(account, body, 4096),
 			UpstreamStatus: resp.StatusCode,
 		})
-		setOpsUpstreamError(c, resp.StatusCode, cyberMsg, truncateString(string(body), 2048))
-		clientMsg := cyberMsg
+		setOpsUpstreamError(c, resp.StatusCode, safeCyberMsg, codexPrivacyBodyMarker(account, body, 2048))
+		clientMsg := safeCyberMsg
 		if clientMsg == "" {
 			clientMsg = "Request blocked by upstream cyber-security policy"
 		}
@@ -603,15 +627,9 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 		upstreamMsg = fmt.Sprintf("Upstream error: %d", resp.StatusCode)
 	}
 	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+	upstreamMsg = codexPrivacyUpstreamMessage(account, resp.StatusCode, upstreamMsg)
 
-	upstreamDetail := ""
-	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-		maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
-		if maxBytes <= 0 {
-			maxBytes = 2048
-		}
-		upstreamDetail = truncateString(string(body), maxBytes)
-	}
+	upstreamDetail := s.codexPrivacyUpstreamErrorDetail(account, body)
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 
 	// Apply error passthrough rules
@@ -619,6 +637,9 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 		c, account.Platform, resp.StatusCode, body,
 		http.StatusBadGateway, "api_error", "Upstream request failed",
 	); matched {
+		if codexPrivacyEnabled(account) {
+			errMsg = "Upstream request failed"
+		}
 		MarkResponseCommitted(c)
 		writeError(c, status, errType, errMsg)
 		if upstreamMsg == "" {
@@ -676,7 +697,7 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 	if shouldDisable {
 		return nil, &UpstreamFailoverError{
 			StatusCode:             resp.StatusCode,
-			ResponseBody:           body,
+			ResponseBody:           codexPrivacyUpstreamErrorBody(account, resp.StatusCode, body),
 			RetryableOnSameAccount: false,
 		}
 	}

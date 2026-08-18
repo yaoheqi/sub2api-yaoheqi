@@ -105,7 +105,9 @@ func TestOpenAIGatewayService_ResponsesUnknownModelDoesNotFallbackToGPT54(t *tes
 	}}
 
 	svc := &OpenAIGatewayService{
-		cfg:          &config.Config{},
+		cfg: &config.Config{Gateway: config.GatewayConfig{
+			CodexFingerprintSecret: testCodexDeploymentSecret,
+		}},
 		httpUpstream: upstream,
 	}
 	account := &Account{
@@ -120,6 +122,9 @@ func TestOpenAIGatewayService_ResponsesUnknownModelDoesNotFallbackToGPT54(t *tes
 		},
 		Status:      StatusActive,
 		Schedulable: true,
+		Extra: map[string]any{
+			codexFingerprintModeExtraKey: string(codexFingerprintOff),
+		},
 	}
 
 	result, err := svc.Forward(context.Background(), c, account, originalBody)
@@ -213,6 +218,9 @@ func TestOpenAIGatewayService_OAuthMessagesBridgeDoesNotInjectDefaultInstruction
 		},
 		Status:      StatusActive,
 		Schedulable: true,
+		Extra: map[string]any{
+			codexFingerprintModeExtraKey: string(codexFingerprintOff),
+		},
 	}
 
 	result, err := svc.Forward(context.Background(), c, account, originalBody)
@@ -385,13 +393,16 @@ func TestOpenAIGatewayService_OAuthPassthrough_StreamKeepsToolNameAndBodyNormali
 	}
 
 	account := &Account{
-		ID:             123,
-		Name:           "acc",
-		Platform:       PlatformOpenAI,
-		Type:           AccountTypeOAuth,
-		Concurrency:    1,
-		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
-		Extra:          map[string]any{"openai_passthrough": true},
+		ID:          123,
+		Name:        "acc",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		Extra: map[string]any{
+			"openai_passthrough":         true,
+			codexFingerprintModeExtraKey: "off",
+		},
 		Status:         StatusActive,
 		Schedulable:    true,
 		RateMultiplier: f64p(1),
@@ -478,7 +489,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_PreservesNamespaceRequest(t *test
 	account := &Account{
 		ID: 125, Name: "acc", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1,
 		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
-		Extra:       map[string]any{"openai_passthrough": true}, Status: StatusActive, Schedulable: true, RateMultiplier: f64p(1),
+		Extra:       map[string]any{"openai_passthrough": true, codexFingerprintModeExtraKey: "off"}, Status: StatusActive, Schedulable: true, RateMultiplier: f64p(1),
 	}
 
 	result, err := svc.Forward(context.Background(), c, account, originalBody)
@@ -550,6 +561,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_FlattenEnabledNamespaceRequestAnd
 		Extra: map[string]any{
 			"openai_passthrough":                  true,
 			"openai_responses_flatten_namespaces": true,
+			codexFingerprintModeExtraKey:          "off",
 		},
 		Status: StatusActive, Schedulable: true, RateMultiplier: f64p(1),
 	}
@@ -607,7 +619,7 @@ func TestOpenAIGatewayService_NativeOAuth_FlattenEnabledNamespaceRequestAndStrea
 	account := &Account{
 		ID: 124, Name: "native", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1,
 		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
-		Extra:       map[string]any{"openai_responses_flatten_namespaces": true},
+		Extra:       map[string]any{"openai_responses_flatten_namespaces": true, codexFingerprintModeExtraKey: "off"},
 		Status:      StatusActive, Schedulable: true, RateMultiplier: f64p(1),
 	}
 
@@ -666,7 +678,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_NamespaceNonStreamingResponse(t *
 	setOpenAIResponsesNamespaceNames(c, names)
 
 	result, err := (&OpenAIGatewayService{cfg: &config.Config{}}).handleNonStreamingResponsePassthrough(
-		context.Background(), resp, c, "gpt-5.5", "",
+		context.Background(), resp, c, nil, "gpt-5.5", "",
 	)
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -746,7 +758,10 @@ func TestOpenAIGatewayService_OAuthPassthrough_CompactUsesJSONAndKeepsNonStreami
 			"model_mapping":         map[string]any{"gpt-5.1-codex": "gpt-5.1-account"},
 			"compact_model_mapping": map[string]any{"gpt-5.1-codex": "gpt-5.1-compact"},
 		},
-		Extra:          map[string]any{"openai_passthrough": true},
+		Extra: map[string]any{
+			"openai_passthrough":         true,
+			codexFingerprintModeExtraKey: "off",
+		},
 		Status:         StatusActive,
 		Schedulable:    true,
 		RateMultiplier: f64p(1),
@@ -803,7 +818,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_UpstreamRequestIgnoresClientCance
 		Type:           AccountTypeOAuth,
 		Concurrency:    1,
 		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
-		Extra:          map[string]any{"openai_passthrough": true, "openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeOff},
+		Extra:          map[string]any{"openai_passthrough": true, "openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeOff, codexFingerprintModeExtraKey: "off"},
 		Status:         StatusActive,
 		Schedulable:    true,
 		RateMultiplier: f64p(1),
@@ -847,7 +862,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_CodexMissingInstructionsGetsDefau
 			account := &Account{
 				ID: 123, Name: "acc", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1,
 				Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
-				Extra:       map[string]any{"openai_passthrough": true, "openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeOff},
+				Extra:       map[string]any{"openai_passthrough": true, "openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeOff, codexFingerprintModeExtraKey: "off"},
 				Status:      StatusActive, Schedulable: true, RateMultiplier: f64p(1),
 			}
 
@@ -895,7 +910,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_DisabledUsesLegacyTransform(t *te
 		Type:           AccountTypeOAuth,
 		Concurrency:    1,
 		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
-		Extra:          map[string]any{"openai_passthrough": false},
+		Extra:          map[string]any{"openai_passthrough": false, codexFingerprintModeExtraKey: "off"},
 		Status:         StatusActive,
 		Schedulable:    true,
 		RateMultiplier: f64p(1),
@@ -943,7 +958,7 @@ func TestOpenAIGatewayService_OAuthLegacy_UpstreamRequestIgnoresClientCancel(t *
 		Type:           AccountTypeOAuth,
 		Concurrency:    1,
 		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
-		Extra:          map[string]any{"openai_passthrough": false, "openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeOff},
+		Extra:          map[string]any{"openai_passthrough": false, "openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeOff, codexFingerprintModeExtraKey: "off"},
 		Status:         StatusActive,
 		Schedulable:    true,
 		RateMultiplier: f64p(1),
@@ -986,7 +1001,7 @@ func TestOpenAIGatewayService_OAuthLegacy_CompositeCodexUAUsesCodexOriginator(t 
 		Type:           AccountTypeOAuth,
 		Concurrency:    1,
 		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
-		Extra:          map[string]any{"openai_passthrough": false},
+		Extra:          map[string]any{"openai_passthrough": false, codexFingerprintModeExtraKey: "off"},
 		Status:         StatusActive,
 		Schedulable:    true,
 		RateMultiplier: f64p(1),
@@ -1041,13 +1056,16 @@ func TestOpenAIGatewayService_OAuthPassthrough_ResponseHeadersAllowXCodex(t *tes
 	}
 
 	account := &Account{
-		ID:             123,
-		Name:           "acc",
-		Platform:       PlatformOpenAI,
-		Type:           AccountTypeOAuth,
-		Concurrency:    1,
-		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
-		Extra:          map[string]any{"openai_passthrough": true},
+		ID:          123,
+		Name:        "acc",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		Extra: map[string]any{
+			"openai_passthrough":         true,
+			codexFingerprintModeExtraKey: "off",
+		},
 		Status:         StatusActive,
 		Schedulable:    true,
 		RateMultiplier: f64p(1),
@@ -1083,13 +1101,16 @@ func TestOpenAIGatewayService_OAuthPassthrough_UpstreamErrorIncludesPassthroughF
 	}
 
 	account := &Account{
-		ID:             123,
-		Name:           "acc",
-		Platform:       PlatformOpenAI,
-		Type:           AccountTypeOAuth,
-		Concurrency:    1,
-		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
-		Extra:          map[string]any{"openai_passthrough": true},
+		ID:          123,
+		Name:        "acc",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		Extra: map[string]any{
+			"openai_passthrough":         true,
+			codexFingerprintModeExtraKey: "off",
+		},
 		Status:         StatusActive,
 		Schedulable:    true,
 		RateMultiplier: f64p(1),
@@ -1835,13 +1856,16 @@ func TestOpenAIGatewayService_OAuthPassthrough_NonCodexUAFallbackToCodexUA(t *te
 	}
 
 	account := &Account{
-		ID:             123,
-		Name:           "acc",
-		Platform:       PlatformOpenAI,
-		Type:           AccountTypeOAuth,
-		Concurrency:    1,
-		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
-		Extra:          map[string]any{"openai_passthrough": true},
+		ID:          123,
+		Name:        "acc",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		Extra: map[string]any{
+			"openai_passthrough":         true,
+			codexFingerprintModeExtraKey: "off",
+		},
 		Status:         StatusActive,
 		Schedulable:    true,
 		RateMultiplier: f64p(1),
@@ -1884,13 +1908,16 @@ func TestOpenAIGatewayService_OAuthPassthrough_OfficialIdentityUnified(t *testin
 	}
 
 	account := &Account{
-		ID:             123,
-		Name:           "acc",
-		Platform:       PlatformOpenAI,
-		Type:           AccountTypeOAuth,
-		Concurrency:    1,
-		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
-		Extra:          map[string]any{"openai_passthrough": true},
+		ID:          123,
+		Name:        "acc",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		Extra: map[string]any{
+			"openai_passthrough":         true,
+			codexFingerprintModeExtraKey: "off",
+		},
 		Status:         StatusActive,
 		Schedulable:    true,
 		RateMultiplier: f64p(1),
@@ -1934,7 +1961,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_CodexTuiIdentityUnified(t *testin
 		Type:           AccountTypeOAuth,
 		Concurrency:    1,
 		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
-		Extra:          map[string]any{"openai_passthrough": true},
+		Extra:          map[string]any{"openai_passthrough": true, codexFingerprintModeExtraKey: "off"},
 		Status:         StatusActive,
 		Schedulable:    true,
 		RateMultiplier: f64p(1),
@@ -1967,7 +1994,7 @@ func TestOpenAIGatewayService_CodexFingerprintHTTPTransformedHeaderBodyParityAnd
 		Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
 	}}
 	svc := &OpenAIGatewayService{
-		cfg:           &config.Config{},
+		cfg:           &config.Config{Gateway: config.GatewayConfig{CodexFingerprintSecret: testCodexDeploymentSecret}},
 		httpUpstream:  upstream,
 		toolCorrector: NewCodexToolCorrector(),
 	}
@@ -1984,9 +2011,9 @@ func TestOpenAIGatewayService_CodexFingerprintHTTPTransformedHeaderBodyParityAnd
 
 	seed, ok := codexFingerprintSeed(account.Extra)
 	require.True(t, ok)
-	wantInstall := resolveConvergedInstallationID(account, seed)
-	wantSession := resolveConvergedSessionID(seed)
-	wantThread := resolveConvergedThreadID(seed, "header-session")
+	wantInstall := resolveConvergedInstallationID(account, seed, testCodexDeploymentSecret)
+	wantSession := resolveConvergedSessionID(seed, testCodexDeploymentSecret)
+	wantThread := resolveConvergedThreadID(seed, "header-session", testCodexDeploymentSecret)
 
 	require.Equal(t, wantInstall, upstream.lastReq.Header.Get("x-codex-installation-id"))
 	require.Equal(t, wantSession, upstream.lastReq.Header.Get("session-id"))
@@ -2027,7 +2054,7 @@ func TestOpenAIGatewayService_CodexFingerprintHTTPRawPassthroughHeaderBodyParity
 		Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
 	}}
 	svc := &OpenAIGatewayService{
-		cfg:          &config.Config{},
+		cfg:          &config.Config{Gateway: config.GatewayConfig{CodexFingerprintSecret: testCodexDeploymentSecret}},
 		httpUpstream: upstream,
 	}
 	account := newTestOAuthAccount(4402, map[string]any{
@@ -2046,9 +2073,9 @@ func TestOpenAIGatewayService_CodexFingerprintHTTPRawPassthroughHeaderBodyParity
 
 	seed, ok := codexFingerprintSeed(account.Extra)
 	require.True(t, ok)
-	wantInstall := resolveConvergedInstallationID(account, seed)
-	wantSession := resolveConvergedSessionID(seed)
-	wantThread := resolveConvergedThreadID(seed, "header-session")
+	wantInstall := resolveConvergedInstallationID(account, seed, testCodexDeploymentSecret)
+	wantSession := resolveConvergedSessionID(seed, testCodexDeploymentSecret)
+	wantThread := resolveConvergedThreadID(seed, "header-session", testCodexDeploymentSecret)
 
 	require.Equal(t, wantInstall, upstream.lastReq.Header.Get("x-codex-installation-id"))
 	require.Equal(t, wantSession, upstream.lastReq.Header.Get("session-id"))
@@ -2070,7 +2097,7 @@ func TestOpenAIGatewayService_CodexFingerprintHTTPRawPassthroughHeaderBodyParity
 	require.Equal(t, gjson.Get(bodyTurnMetadata, "turn_id").String(), gjson.Get(headerTurnMetadata, "turn_id").String())
 }
 
-func TestOpenAIGatewayService_CodexFingerprintCompactDoesNotRewriteBodyCacheKeyOrMetadata(t *testing.T) {
+func TestOpenAIGatewayService_CodexFingerprintCompactSanitizesBodyCacheKeyAndMetadata(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	rec := httptest.NewRecorder()
@@ -2087,7 +2114,7 @@ func TestOpenAIGatewayService_CodexFingerprintCompactDoesNotRewriteBodyCacheKeyO
 		Body:       io.NopCloser(strings.NewReader(compactProbeSSESuccessBody)),
 	}}
 	svc := &OpenAIGatewayService{
-		cfg:           &config.Config{},
+		cfg:           &config.Config{Gateway: config.GatewayConfig{CodexFingerprintSecret: testCodexDeploymentSecret}},
 		httpUpstream:  upstream,
 		toolCorrector: NewCodexToolCorrector(),
 	}
@@ -2105,13 +2132,10 @@ func TestOpenAIGatewayService_CodexFingerprintCompactDoesNotRewriteBodyCacheKeyO
 	require.NoError(t, err)
 	require.NotNil(t, upstream.lastReq)
 
-	seed, ok := codexFingerprintSeed(account.Extra)
-	require.True(t, ok)
-	require.NotEqual(t, resolveConvergedSessionID(seed), gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
-	require.Equal(t, "body-session", gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
-	require.Equal(t, "body-session", gjson.GetBytes(upstream.lastBody, "client_metadata.session_id").String())
-	require.False(t, gjson.GetBytes(upstream.lastBody, "client_metadata.x-codex-installation-id").Exists())
-	require.Empty(t, upstream.lastReq.Header.Get("x-codex-window-id"))
+	require.NotEqual(t, "body-session", gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
+	require.NotEqual(t, "body-session", gjson.GetBytes(upstream.lastBody, "client_metadata.session_id").String())
+	require.NotEmpty(t, gjson.GetBytes(upstream.lastBody, "client_metadata.x-codex-installation-id").String())
+	require.NotEmpty(t, upstream.lastReq.Header.Get("session-id"))
 }
 
 func TestOpenAIGatewayService_CodexFingerprintMessagesBridgeDoesNotInjectBodyPromptCacheKey(t *testing.T) {
@@ -2131,7 +2155,7 @@ func TestOpenAIGatewayService_CodexFingerprintMessagesBridgeDoesNotInjectBodyPro
 		Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
 	}}
 	svc := &OpenAIGatewayService{
-		cfg:           &config.Config{},
+		cfg:           &config.Config{Gateway: config.GatewayConfig{CodexFingerprintSecret: testCodexDeploymentSecret}},
 		httpUpstream:  upstream,
 		toolCorrector: NewCodexToolCorrector(),
 	}
@@ -2148,7 +2172,7 @@ func TestOpenAIGatewayService_CodexFingerprintMessagesBridgeDoesNotInjectBodyPro
 
 	seed, ok := codexFingerprintSeed(account.Extra)
 	require.True(t, ok)
-	wantSession := resolveConvergedSessionID(seed)
+	wantSession := resolveConvergedSessionID(seed, testCodexDeploymentSecret)
 	require.False(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_key").Exists())
 	require.Equal(t, wantSession, gjson.GetBytes(upstream.lastBody, "client_metadata.session_id").String())
 	require.Equal(t, wantSession, upstream.lastReq.Header.Get("session_id"))
@@ -2285,7 +2309,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_StreamingSetsFirstTokenMs(t *test
 		Type:           AccountTypeOAuth,
 		Concurrency:    1,
 		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
-		Extra:          map[string]any{"openai_passthrough": true},
+		Extra:          map[string]any{"openai_passthrough": true, codexFingerprintModeExtraKey: "off"},
 		Status:         StatusActive,
 		Schedulable:    true,
 		RateMultiplier: f64p(1),
@@ -2341,7 +2365,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_StreamClientDisconnectStillCollec
 		Type:           AccountTypeOAuth,
 		Concurrency:    1,
 		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
-		Extra:          map[string]any{"openai_passthrough": true},
+		Extra:          map[string]any{"openai_passthrough": true, codexFingerprintModeExtraKey: "off"},
 		Status:         StatusActive,
 		Schedulable:    true,
 		RateMultiplier: f64p(1),
@@ -2393,7 +2417,7 @@ func TestOpenAIGatewayService_APIKeyPassthrough_PreservesBodyAndUsesResponsesEnd
 			"base_url":      "https://api.openai.com",
 			"model_mapping": map[string]any{"gpt-5.2": "gpt-5.2-account"},
 		},
-		Extra:          map[string]any{"openai_passthrough": true},
+		Extra:          map[string]any{"openai_passthrough": true, codexFingerprintModeExtraKey: "off"},
 		Status:         StatusActive,
 		Schedulable:    true,
 		RateMultiplier: f64p(1),
@@ -2444,7 +2468,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_WarnOnTimeoutHeadersForStream(t *
 		Type:           AccountTypeOAuth,
 		Concurrency:    1,
 		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
-		Extra:          map[string]any{"openai_passthrough": true},
+		Extra:          map[string]any{"openai_passthrough": true, codexFingerprintModeExtraKey: "off"},
 		Status:         StatusActive,
 		Schedulable:    true,
 		RateMultiplier: f64p(1),
@@ -2485,7 +2509,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_InfoWhenStreamEndsWithoutDone(t *
 		Type:           AccountTypeOAuth,
 		Concurrency:    1,
 		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
-		Extra:          map[string]any{"openai_passthrough": true},
+		Extra:          map[string]any{"openai_passthrough": true, codexFingerprintModeExtraKey: "off"},
 		Status:         StatusActive,
 		Schedulable:    true,
 		RateMultiplier: f64p(1),
@@ -2525,13 +2549,16 @@ func TestOpenAIGatewayService_OAuthPassthrough_DefaultFiltersTimeoutHeaders(t *t
 		httpUpstream: upstream,
 	}
 	account := &Account{
-		ID:             111,
-		Name:           "acc",
-		Platform:       PlatformOpenAI,
-		Type:           AccountTypeOAuth,
-		Concurrency:    1,
-		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
-		Extra:          map[string]any{"openai_passthrough": true},
+		ID:          111,
+		Name:        "acc",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		Extra: map[string]any{
+			"openai_passthrough":         true,
+			codexFingerprintModeExtraKey: "off",
+		},
 		Status:         StatusActive,
 		Schedulable:    true,
 		RateMultiplier: f64p(1),
@@ -2574,13 +2601,16 @@ func TestOpenAIGatewayService_OAuthPassthrough_AllowTimeoutHeadersWhenConfigured
 		httpUpstream: upstream,
 	}
 	account := &Account{
-		ID:             222,
-		Name:           "acc",
-		Platform:       PlatformOpenAI,
-		Type:           AccountTypeOAuth,
-		Concurrency:    1,
-		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
-		Extra:          map[string]any{"openai_passthrough": true},
+		ID:          222,
+		Name:        "acc",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		// This fixture exercises the legacy timeout-header opt-in. Explicitly
+		// opt out of the privacy pool so the test remains about passthrough
+		// configuration rather than the strict final header invariant.
+		Extra:          map[string]any{"openai_passthrough": true, codexFingerprintModeExtraKey: "off"},
 		Status:         StatusActive,
 		Schedulable:    true,
 		RateMultiplier: f64p(1),

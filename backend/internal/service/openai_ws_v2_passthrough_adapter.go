@@ -674,6 +674,13 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if err := validateOpenAIWSBearerToken(account, token); err != nil {
 		return err
 	}
+	// Keep the passthrough adapter fail-closed when called directly. The
+	// ingress dispatcher normally rejects this account earlier, but this
+	// adapter relays raw frames and cannot satisfy the HTTP privacy contract.
+	if codexPrivacyEnabled(account) {
+		policyErr := codexPrivacyCapabilityError("Responses WebSocket passthrough")
+		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, policyErr.Error(), policyErr)
+	}
 	if account.IsOpenAIOAuth() && isOpenAIResponsesLiteWebSocketPayload(firstClientMessage) {
 		liteFirstMessage, _, liteErr := normalizeOpenAIResponsesLiteToolsPayload(firstClientMessage)
 		if liteErr != nil {

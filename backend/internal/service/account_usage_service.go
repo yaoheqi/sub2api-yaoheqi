@@ -113,6 +113,9 @@ const (
 	openAIProbeCacheTTL = 10 * time.Minute
 	grokProbeRetryTTL   = 1 * time.Minute
 	grokFreeQuotaWindow = 24 * time.Hour
+	// Keep models/usage probes on the same canonical Codex revision as the
+	// privacy HTTP identity tuple. This value must not come from the client.
+	openAICodexProbeVersion = codexCLIVersion
 )
 
 // UsageCache 封装账户使用量相关的缓存
@@ -830,6 +833,13 @@ func (s *AccountUsageService) shouldProbeOpenAICodexSnapshot(accountID int64, no
 func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, account *Account) (map[string]any, error) {
 	if account == nil || !account.IsOAuth() {
 		return nil, nil
+	}
+	if codexPrivacyEnabled(account) {
+		// This administrative probe builds its own /responses request outside
+		// the gateway's request-scoped privacy snapshot. Real traffic still
+		// refreshes Codex usage from response headers; do not create a second,
+		// partially sanitized data path merely to refresh the dashboard early.
+		return nil, codexPrivacyCapabilityError("automatic Codex usage probes")
 	}
 	accessToken := ""
 	if !account.IsOpenAIAgentIdentity() {

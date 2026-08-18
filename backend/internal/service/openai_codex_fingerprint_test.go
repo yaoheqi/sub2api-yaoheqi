@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -14,6 +15,7 @@ import (
 )
 
 const testCodexFingerprintSeed = "11111111-1111-4111-8111-111111111111"
+const testCodexDeploymentSecret = "test-deployment-secret-32-bytes-long"
 
 func newTestOAuthAccount(id int64, extra map[string]any) *Account {
 	if codexFingerprintModeRequiresSeed(codexFingerprintModeFromExtra(extra)) {
@@ -54,6 +56,15 @@ func TestDeriveStableUUIDv4_ValidFormat(t *testing.T) {
 	assert.Equal(t, uuid.RFC4122, parsed.Variant(), "应为 RFC4122 变体")
 }
 
+func TestDeriveStableUUIDv7_ValidFormat(t *testing.T) {
+	got := deriveStableUUIDv7("probe-seed")
+	parsed, err := uuid.Parse(got)
+	require.NoError(t, err)
+	assert.Equal(t, uuid.Version(7), parsed.Version())
+	assert.Equal(t, uuid.RFC4122, parsed.Variant())
+	assert.Equal(t, got, deriveStableUUIDv7("probe-seed"))
+}
+
 // --- GetCodexFingerprintMode ---
 
 func TestGetCodexFingerprintMode(t *testing.T) {
@@ -64,6 +75,7 @@ func TestGetCodexFingerprintMode(t *testing.T) {
 	}{
 		{"nil 账号", nil, codexFingerprintOff},
 		{"非 OAuth 账号", &Account{Platform: PlatformOpenAI, Type: "api_key"}, codexFingerprintOff},
+		// 隐私模式默认开启：未配置/空/非法值都必须阻止客户端标识原样出站。
 		{"无 extra 默认 session", newTestOAuthAccount(1, nil), codexFingerprintSession},
 		{"空值默认 session", newTestOAuthAccount(1, map[string]any{codexFingerprintModeExtraKey: ""}), codexFingerprintSession},
 		{"非法值默认 session", newTestOAuthAccount(1, map[string]any{codexFingerprintModeExtraKey: "invalid"}), codexFingerprintSession},
@@ -83,7 +95,10 @@ func TestGetCodexFingerprintMode(t *testing.T) {
 
 func TestResolveConvergedInstallationID_UsesDeviceID(t *testing.T) {
 	account := newTestOAuthAccount(1, map[string]any{"openai_device_id": "real-device-id"})
-	assert.Equal(t, "real-device-id", resolveConvergedInstallationID(account, testCodexFingerprintSeed))
+	got := resolveConvergedInstallationID(account, testCodexFingerprintSeed, "deployment-a")
+	assert.NotEqual(t, "real-device-id", got, "客户端 device_id 不得原样出站")
+	assert.Equal(t, got, resolveConvergedInstallationID(account, testCodexFingerprintSeed, "deployment-a"), "同部署应稳定")
+	assert.NotEqual(t, got, resolveConvergedInstallationID(account, testCodexFingerprintSeed, "deployment-b"), "不同部署应隔离")
 }
 
 func TestResolveConvergedInstallationID_DerivesFromSeed(t *testing.T) {
@@ -94,11 +109,31 @@ func TestResolveConvergedInstallationID_DerivesFromSeed(t *testing.T) {
 	assert.Equal(t, result, resolveConvergedInstallationID(account, testCodexFingerprintSeed), "确定性")
 }
 
+func TestResolveConvergedInstallationID_DifferentAccounts(t *testing.T) {
+	a := resolveConvergedInstallationID(newTestOAuthAccount(1, nil), testCodexFingerprintSeed, "deployment-a")
+	b := resolveConvergedInstallationID(newTestOAuthAccount(2, nil), testCodexFingerprintSeed, "deployment-a")
+	assert.NotEqual(t, a, b)
+}
+
 func TestResolveConvergedInstallationID_DifferentSeeds(t *testing.T) {
 	account := newTestOAuthAccount(1, nil)
-	a := resolveConvergedInstallationID(account, testCodexFingerprintSeed)
-	b := resolveConvergedInstallationID(account, "22222222-2222-4222-8222-222222222222")
+	a := resolveConvergedInstallationID(account, testCodexFingerprintSeed, "deployment-a")
+	b := resolveConvergedInstallationID(account, "22222222-2222-4222-8222-222222222222", "deployment-a")
 	assert.NotEqual(t, a, b)
+}
+
+func TestResolveConvergedInstallationID_DifferentDeployments(t *testing.T) {
+	account := newTestOAuthAccount(1, nil)
+	a := resolveConvergedInstallationID(account, testCodexFingerprintSeed, "deployment-a")
+	b := resolveConvergedInstallationID(account, testCodexFingerprintSeed, "deployment-b")
+	assert.NotEqual(t, a, b, "同一账号 ID 在不同部署不得产生相同指纹")
+}
+
+func TestResolveConvergedSessionID_DifferentDeployments(t *testing.T) {
+	a := resolveConvergedSessionID(testCodexFingerprintSeed, "deployment-a")
+	b := resolveConvergedSessionID(testCodexFingerprintSeed, "deployment-b")
+	assert.NotEqual(t, a, b, "相同账号编号在不同部署不得共享 session 指纹")
+	assert.Equal(t, a, resolveConvergedSessionID(testCodexFingerprintSeed, "deployment-a"), "同一部署内必须稳定")
 }
 
 // --- resolveConvergedThreadID ---
@@ -147,7 +182,7 @@ func TestResolveCodexFingerprintIDsFromRequest_ExplicitOptInHonored(t *testing.T
 	}
 }
 
-func TestResolveCodexFingerprintIDsFromRequest_EnabledModesRequireValidSeed(t *testing.T) {
+func TestResolveCodexFingerprintIDsFromRequest_EnabledModesUseDeploymentFallbackSeed(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
 		extra map[string]any
@@ -161,7 +196,9 @@ func TestResolveCodexFingerprintIDsFromRequest_EnabledModesRequireValidSeed(t *t
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: tt.extra}
-			require.Nil(t, resolveCodexFingerprintIDsFromRequest(account, nil))
+			ids := resolveCodexFingerprintIDsFromRequest(account, nil, "test-deployment-secret-32-bytes-long")
+			require.NotNil(t, ids, "legacy/invalid persisted seed must use deployment-bound fallback")
+			assert.NotEmpty(t, ids.installationID)
 		})
 	}
 }
@@ -195,12 +232,13 @@ func TestApplyCodexFingerprintHeaders_DeviceMode(t *testing.T) {
 	ids := resolveCodexFingerprintIDsFromRequest(account, nil)
 	applyCodexFingerprintHeaders(h, ids)
 
-	assert.Equal(t, "converged-device", h.Get("x-codex-installation-id"), "installation_id 应收敛")
+	assert.Equal(t, ids.installationID, h.Get("x-codex-installation-id"), "installation_id 应收敛")
+	assert.NotEqual(t, "converged-device", h.Get("x-codex-installation-id"), "配置的真实 device_id 不得原样出站")
 	assert.Equal(t, "user-window:0", h.Get("x-codex-window-id"), "device 模式不改写 window_id")
 
 	var meta map[string]any
 	require.NoError(t, json.Unmarshal([]byte(h.Get("x-codex-turn-metadata")), &meta))
-	assert.Equal(t, "converged-device", meta["installation_id"])
+	assert.Equal(t, ids.installationID, meta["installation_id"])
 	assert.Equal(t, "user-session", meta["session_id"], "device 模式不改写 session_id")
 	assert.Equal(t, "seccomp", meta["sandbox"], "非指纹字段保留原样")
 }
@@ -393,6 +431,9 @@ func TestFingerprintIDs_MalformedEmbeddedMetadataRebuiltConsistently(t *testing.
 	for _, key := range []string{"installation_id", "session_id", "thread_id", "turn_id", "window_id", "turn_started_at_unix_ms"} {
 		assert.Equal(t, headerMeta[key], bodyMeta[key], "rebuilt metadata field %s must match", key)
 	}
+	parsedTurnID, err := uuid.Parse(ids.turnID)
+	require.NoError(t, err)
+	assert.Equal(t, uuid.Version(7), parsedTurnID.Version(), "turn_id 必须保持 UUIDv7 契约")
 }
 
 // --- applyCodexFingerprintClientMetadata ---
@@ -429,14 +470,15 @@ func TestApplyCodexFingerprintClientMetadata_DeviceMode(t *testing.T) {
 
 	cm, ok := reqBody["client_metadata"].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, "converged-device", cm["x-codex-installation-id"])
+	assert.Equal(t, ids.installationID, cm["x-codex-installation-id"])
+	assert.NotEqual(t, "converged-device", cm["x-codex-installation-id"])
 	assert.Equal(t, "user-session", cm["session_id"], "device 模式不改 session_id")
 
 	turnMetaStr, ok := cm["x-codex-turn-metadata"].(string)
 	require.True(t, ok)
 	var meta map[string]any
 	require.NoError(t, json.Unmarshal([]byte(turnMetaStr), &meta))
-	assert.Equal(t, "converged-device", meta["installation_id"])
+	assert.Equal(t, ids.installationID, meta["installation_id"])
 	assert.Equal(t, "seccomp", meta["sandbox"], "非指纹字段保留原样")
 }
 
@@ -856,8 +898,10 @@ func TestApplyStagedCodexFingerprintHeaders_SkipsNonOAuthAccount(t *testing.T) {
 }
 
 func TestBuildUpstreamRequestOpenAIPassthrough_AppliesStagedFingerprint(t *testing.T) {
-	svc := &OpenAIGatewayService{}
-	// 未显式配置时默认设备+会话，并覆盖透传路径。
+	svc := &OpenAIGatewayService{cfg: &config.Config{
+		Gateway: config.GatewayConfig{CodexFingerprintSecret: testCodexDeploymentSecret},
+	}}
+	// 显式 session 与默认隐私策略使用同一条透传终态收口路径。
 	account := newTestOAuthAccount(2001, map[string]any{
 		"openai_oauth_passthrough": true,
 	})
@@ -884,7 +928,7 @@ func TestBuildUpstreamRequestOpenAIPassthrough_AppliesStagedFingerprint(t *testi
 	turnMetadata := req.Header.Get("x-codex-turn-metadata")
 	require.NotEmpty(t, turnMetadata)
 	assert.Contains(t, turnMetadata, ids.sessionID, "turn-metadata JSON 中的 session_id 应被收敛")
-	assert.Contains(t, turnMetadata, `"sandbox":"seatbelt"`, "turn-metadata 未指定字段应原样保留")
+	assert.NotContains(t, turnMetadata, "seatbelt", "客户端运行策略不得作为稳定 metadata 标签出站")
 }
 
 func TestBuildUpstreamRequestOpenAIPassthrough_OffModeKeepsIsolatedSession(t *testing.T) {
@@ -922,4 +966,262 @@ func TestApplyCodexFingerprintClientMetadataRaw_NonObjectBodyUntouched(t *testin
 		assert.False(t, changed, "非 JSON 对象 body 不应被改写: %s", body)
 		assert.Equal(t, []byte(body), out)
 	}
+}
+
+func TestSanitizeCodexPrivacyRequestBody_CanonicalizesAllMetadataCarriers(t *testing.T) {
+	account := newTestOAuthAccount(7001, map[string]any{codexFingerprintModeExtraKey: "session"})
+	clientHeaders := http.Header{}
+	clientHeaders.Set("session-id", "raw-client-session")
+	ids := resolveCodexFingerprintIDsFromRequest(account, clientHeaders, "deployment-secret-a")
+	require.NotNil(t, ids)
+
+	body := map[string]any{
+		"model":            "gpt-5.6-sol",
+		"prompt_cache_key": "raw-top-cache",
+		"Client-Metadata": map[string]any{
+			"cwd":       "C:/Users/alice/private",
+			"device_id": "raw-alias-device",
+		},
+		"client_metadata": map[string]any{
+			"cwd":       "C:/Users/alice/repo",
+			"device_id": "raw-device",
+			"sandbox":   "seatbelt",
+			"responsesapi_client_metadata": map[string]any{
+				"prompt_cache_key": "raw-nested-cache",
+				"git_remote":       "ssh://private.example/repo",
+			},
+		},
+	}
+	raw, err := json.Marshal(body)
+	require.NoError(t, err)
+	out, err := sanitizeCodexPrivacyRequestBody(raw, account, ids, "deployment-secret-a")
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), "raw-top-cache")
+	assert.NotContains(t, string(out), "raw-nested-cache")
+	assert.NotContains(t, string(out), "raw-alias-device")
+	assert.NotContains(t, string(out), "C:/Users/alice")
+	assert.NotContains(t, string(out), "private.example")
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(out, &decoded))
+	assert.NotContains(t, decoded, "Client-Metadata")
+	topCache, ok := decoded["prompt_cache_key"].(string)
+	require.True(t, ok)
+	assert.NotEmpty(t, topCache)
+	cm, ok := decoded["client_metadata"].(map[string]any)
+	require.True(t, ok)
+	assert.NotContains(t, cm, "sandbox", "客户端运行策略即使语法合法也不能作为稳定标签出站")
+	nested, ok := cm["responsesapi_client_metadata"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, topCache, nested["prompt_cache_key"], "所有 cache carrier 必须使用 top-level canonical 值")
+
+	h := http.Header{}
+	h.Set("conversation_id", "raw-conversation")
+	h.Set("session_id", "raw-session")
+	h.Set("x-codex-installation-id", "raw-install")
+	sanitizeCodexPrivacyHeaders(h, account, ids, out, "deployment-secret-a")
+	assert.Equal(t, topCache, h.Get("conversation_id"))
+	assert.Equal(t, ids.sessionID, h.Get("session_id"))
+	assert.Equal(t, ids.installationID, h.Get("x-codex-installation-id"))
+	assert.NotContains(t, h.Values("conversation_id"), "raw-conversation")
+}
+
+func TestSanitizeCodexPrivacyHeaders_ConversationWithoutCacheIsDeploymentScoped(t *testing.T) {
+	account := newTestOAuthAccount(7002, map[string]any{codexFingerprintModeExtraKey: "session"})
+	body := []byte(`{"model":"gpt-5.6-sol","input":[]}`)
+
+	idsA := resolveCodexFingerprintIDs(account, "client-session", codexFingerprintSession, "deployment-a")
+	hA := http.Header{"Conversation_id": []string{"raw-conversation"}}
+	sanitizeCodexPrivacyHeaders(hA, account, idsA, body, "deployment-a")
+
+	idsB := resolveCodexFingerprintIDs(account, "client-session", codexFingerprintSession, "deployment-b")
+	hB := http.Header{"Conversation_id": []string{"raw-conversation"}}
+	sanitizeCodexPrivacyHeaders(hB, account, idsB, body, "deployment-b")
+
+	assert.NotEqual(t, "raw-conversation", hA.Get("conversation_id"))
+	assert.NotEqual(t, hA.Get("conversation_id"), hB.Get("conversation_id"))
+	assert.Equal(t, hA.Get("conversation_id"), deriveDeploymentUUID("deployment-a", "conversation:account:7002:raw-conversation"))
+
+	first := hA.Get("conversation_id")
+	sanitizeCodexPrivacyHeaders(hA, account, idsA, body, "deployment-a")
+	assert.Equal(t, first, hA.Get("conversation_id"), "compat 路径重复执行终态收口必须幂等")
+}
+
+func TestSanitizeCodexPrivacyHeaders_DerivesHTTPProtocolHeaders(t *testing.T) {
+	account := newTestOAuthAccount(7005, map[string]any{codexFingerprintModeExtraKey: "session"})
+	ids := resolveCodexFingerprintIDs(account, "client-session", codexFingerprintSession, "deployment-http")
+	body := []byte(`{"model":"gpt-5.6-sol","input":[],"stream":true}`)
+	h := http.Header{}
+	h.Set("Accept", "application/json")
+	h.Set("Content-Type", "application/vendor.stable-tag+json")
+	h.Set("OpenAI-Beta", "stable-client-tag")
+	h.Set("X-Codex-Beta-Features", "responses_websockets_v2,stable_feature")
+	h.Set(responsesLiteHeaderKey, "device-stable-label")
+	h.Set("X-Stainless-Timeout", "123456")
+
+	sanitizeCodexPrivacyHeaders(h, account, ids, body, "deployment-http")
+
+	assert.Equal(t, "text/event-stream", h.Get("Accept"))
+	assert.Equal(t, "application/json", h.Get("Content-Type"))
+	assert.Empty(t, h.Get("OpenAI-Beta"))
+	assert.Equal(t, openAIRemoteCompactionV2Feature, h.Get("X-Codex-Beta-Features"))
+	assert.Empty(t, h.Get(responsesLiteHeaderKey))
+	assert.Empty(t, h.Get("X-Stainless-Timeout"))
+
+	// The opposite client preference must produce the same canonical result
+	// when the normalized request is non-streaming.
+	nonStreaming := http.Header{"Accept": []string{"text/event-stream"}}
+	sanitizeCodexPrivacyHeaders(nonStreaming, account, ids, []byte(`{"stream":false}`), "deployment-http")
+	assert.Equal(t, "application/json", nonStreaming.Get("Accept"))
+}
+
+func TestSanitizeCodexPrivacyHeaders_OverridesLegacyIdentitySwitch(t *testing.T) {
+	SetCodexIdentityEnforcementEnabled(false)
+	t.Cleanup(func() { SetCodexIdentityEnforcementEnabled(true) })
+
+	account := newTestOAuthAccount(70051, map[string]any{codexFingerprintModeExtraKey: "session"})
+	ids := resolveCodexFingerprintIDs(account, "client-session", codexFingerprintSession, "deployment-identity")
+	h := http.Header{
+		"User-Agent": {"Mozilla/5.0 (Windows NT 10.0; Win64; x64) private-browser"},
+		"Originator": {"private-browser"},
+		"Version":    {"0.1.0"},
+	}
+
+	sanitizeCodexPrivacyHeaders(h, account, ids, []byte(`{"stream":true}`), "deployment-identity")
+
+	assert.Equal(t, CodexCanonicalUserAgent(), h.Get("User-Agent"))
+	_, wantOriginator := CodexCanonicalAuthIdentity()
+	assert.Equal(t, wantOriginator, h.Get("Originator"))
+	assert.Equal(t, CodexCanonicalClientVersion(), h.Get("Version"))
+}
+
+func TestSanitizeCodexPrivacyHeaders_CanonicalizesUAWithoutAddingOriginator(t *testing.T) {
+	account := newTestOAuthAccount(70052, map[string]any{codexFingerprintModeExtraKey: "session"})
+	ids := resolveCodexFingerprintIDs(account, "client-session", codexFingerprintSession, "deployment-compat")
+	h := http.Header{
+		"User-Agent": {"Mozilla/5.0 private-browser"},
+		"Version":    {"client-stable-version"},
+	}
+
+	sanitizeCodexPrivacyHeaders(h, account, ids, []byte(`{"stream":true}`), "deployment-compat")
+
+	assert.Equal(t, CodexCanonicalUserAgent(), h.Get("User-Agent"))
+	assert.Equal(t, CodexCanonicalClientVersion(), h.Get("Version"))
+	assert.Empty(t, h.Get("Originator"))
+}
+
+func TestSanitizeCodexPrivacyRequestBody_SessionCacheWinsAcrossCarriers(t *testing.T) {
+	account := newTestOAuthAccount(7006, map[string]any{codexFingerprintModeExtraKey: "session"})
+	ids := resolveCodexFingerprintIDs(account, "raw-client-session", codexFingerprintSession, "deployment-cache")
+	body := []byte(`{"model":"gpt-5.6-sol","prompt_cache_key":"raw-client-session","client_metadata":{"responsesapi_client_metadata":{"prompt_cache_key":"other-cache"}}}`)
+
+	out, err := sanitizeCodexPrivacyRequestBody(body, account, ids, "deployment-cache")
+	require.NoError(t, err)
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(out, &decoded))
+	assert.Equal(t, ids.sessionID, decoded["prompt_cache_key"])
+	cm := decoded["client_metadata"].(map[string]any)
+	nested := cm["responsesapi_client_metadata"].(map[string]any)
+	assert.Equal(t, ids.sessionID, nested["prompt_cache_key"])
+
+	h := http.Header{"Conversation_id": []string{"raw-conversation"}}
+	sanitizeCodexPrivacyHeaders(h, account, ids, out, "deployment-cache")
+	assert.Equal(t, ids.sessionID, h.Get("conversation_id"))
+}
+
+func TestSanitizeCodexPrivacyRequestBody_NestedOnlyCacheAlignsConversation(t *testing.T) {
+	account := newTestOAuthAccount(7007, map[string]any{codexFingerprintModeExtraKey: "session"})
+	ids := resolveCodexFingerprintIDs(account, "raw-client-session", codexFingerprintSession, "deployment-nested")
+	body := []byte(`{"model":"gpt-5.6-sol","client_metadata":{"responsesapi_client_metadata":{"prompt_cache_key":"nested-only-cache"}}}`)
+
+	out, err := sanitizeCodexPrivacyRequestBody(body, account, ids, "deployment-nested")
+	require.NoError(t, err)
+	require.NotEmpty(t, ids.promptCacheCanonical)
+	h := http.Header{"Conversation_id": []string{"raw-conversation"}}
+	sanitizeCodexPrivacyHeaders(h, account, ids, out, "deployment-nested")
+	assert.Equal(t, ids.promptCacheCanonical, h.Get("conversation_id"))
+	assert.NotContains(t, string(out), "nested-only-cache")
+}
+
+func TestSanitizeCodexPrivacyRequestBody_DropsResponseChainAndMapsConversation(t *testing.T) {
+	account := newTestOAuthAccount(70071, map[string]any{codexFingerprintModeExtraKey: "session"})
+	ids := resolveCodexFingerprintIDs(account, "raw-client-session", codexFingerprintSession, "deployment-chain")
+	body := []byte(`{"model":"gpt-5.6-sol","previous_response_id":"resp-private","conversation_id":"conversation-private","conversation":{"id":"conversation-object-private"}}`)
+
+	out, err := sanitizeCodexPrivacyRequestBody(body, account, ids, "deployment-chain")
+	require.NoError(t, err)
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(out, &decoded))
+	assert.NotContains(t, decoded, "previous_response_id")
+	assert.NotContains(t, decoded, "conversation")
+	mapped, ok := decoded["conversation_id"].(string)
+	require.True(t, ok)
+	assert.NotEmpty(t, mapped)
+	assert.NotEqual(t, "conversation-private", mapped)
+	assert.NotContains(t, string(out), "resp-private")
+	assert.NotContains(t, string(out), "conversation-object-private")
+
+	h := http.Header{"Conversation_id": []string{"conversation-private"}}
+	sanitizeCodexPrivacyHeaders(h, account, ids, out, "deployment-chain")
+	assert.Equal(t, mapped, h.Get("conversation_id"), "body/header conversation 必须共用同一 request snapshot")
+}
+
+func TestSanitizeCodexPrivacyRequestBody_DropsCamelCaseMetadataAlias(t *testing.T) {
+	account := newTestOAuthAccount(7008, map[string]any{codexFingerprintModeExtraKey: "session"})
+	ids := resolveCodexFingerprintIDs(account, "client-session", codexFingerprintSession, "deployment-alias")
+	body := []byte(`{"model":"gpt-5.6-sol","clientMetadata":{"cwd":"C:/private/repo","device_id":"raw-device"}}`)
+
+	out, err := sanitizeCodexPrivacyRequestBody(body, account, ids, "deployment-alias")
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), "clientMetadata")
+	assert.NotContains(t, string(out), "C:/private/repo")
+	assert.NotContains(t, string(out), "raw-device")
+}
+
+func TestSanitizeCodexPrivacyRequestBody_DropsAcronymCamelMetadataAlias(t *testing.T) {
+	account := newTestOAuthAccount(9, map[string]any{codexFingerprintModeExtraKey: "session"})
+	ids := resolveCodexFingerprintIDs(account, "client-session", codexFingerprintSession, "deployment-acronym")
+	require.NotNil(t, ids)
+	body := []byte(`{"model":"gpt-5.6-sol","responsesAPIMetadata":{"cwd":"C:/private/repo","device_id":"raw-device"},"promptCacheKey":"raw-cache"}`)
+	out, err := sanitizeCodexPrivacyRequestBody(body, account, ids, "deployment-acronym")
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), "responsesAPIMetadata")
+	assert.NotContains(t, string(out), "raw-device")
+	assert.NotContains(t, string(out), "raw-cache")
+}
+
+func TestSanitizeCodexPrivacyMetadata_RejectsOverDepthCarrier(t *testing.T) {
+	account := newTestOAuthAccount(7003, map[string]any{codexFingerprintModeExtraKey: "session"})
+	ids := resolveCodexFingerprintIDs(account, "client-session", codexFingerprintSession, "deployment-depth")
+
+	deep := map[string]any{"cwd": "deep-cwd", "device_id": "deep-device"}
+	for i := 0; i < 10; i++ {
+		deep = map[string]any{"responsesapi_client_metadata": deep}
+	}
+	body := map[string]any{"model": "gpt-5.6-sol", "client_metadata": deep}
+	raw, err := json.Marshal(body)
+	require.NoError(t, err)
+	out, err := sanitizeCodexPrivacyRequestBody(raw, account, ids, "deployment-depth")
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), "deep-cwd")
+	assert.NotContains(t, string(out), "deep-device")
+}
+
+func TestSanitizeCodexPrivacy_DeviceModeDropsUnmappedSessionCarriers(t *testing.T) {
+	account := newTestOAuthAccount(7004, map[string]any{codexFingerprintModeExtraKey: "device"})
+	ids := resolveCodexFingerprintIDs(account, "raw-session", codexFingerprintDevice, "deployment-device")
+	body := []byte(`{"model":"gpt-5.6-sol","session_id":"raw-session","client_metadata":{"session_id":"raw-session","thread_id":"raw-thread"}}`)
+	out, err := sanitizeCodexPrivacyRequestBody(body, account, ids, "deployment-device")
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), "raw-session")
+	assert.NotContains(t, string(out), "raw-thread")
+
+	h := http.Header{}
+	h.Set("session_id", "raw-session")
+	h.Set("conversation_id", "raw-conversation")
+	h.Set("thread-id", "raw-thread")
+	sanitizeCodexPrivacyHeaders(h, account, ids, out, "deployment-device")
+	assert.Empty(t, h.Get("session_id"))
+	assert.Empty(t, h.Get("conversation_id"))
+	assert.Empty(t, h.Get("thread-id"))
 }

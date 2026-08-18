@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	securitySecretKeyJWT        = "jwt_secret"
-	securitySecretReadRetryMax  = 5
-	securitySecretReadRetryWait = 10 * time.Millisecond
+	securitySecretKeyJWT              = "jwt_secret"
+	securitySecretKeyCodexFingerprint = "codex_fingerprint_secret"
+	securitySecretReadRetryMax        = 5
+	securitySecretReadRetryWait       = 10 * time.Millisecond
 )
 
 var readRandomBytes = rand.Read
@@ -42,17 +43,37 @@ func ensureBootstrapSecrets(ctx context.Context, client *ent.Client, cfg *config
 			log.Println("Warning: configured JWT secret mismatches persisted value; using persisted secret for cross-instance consistency.")
 		}
 		cfg.JWT.Secret = storedSecret
-		return nil
+	} else {
+		secret, created, err := getOrCreateGeneratedSecuritySecret(ctx, client, securitySecretKeyJWT, 32)
+		if err != nil {
+			return fmt.Errorf("ensure jwt secret: %w", err)
+		}
+		cfg.JWT.Secret = secret
+		if created {
+			log.Println("Warning: JWT secret auto-generated and persisted to database. Consider rotating to a managed secret for production.")
+		}
 	}
 
-	secret, created, err := getOrCreateGeneratedSecuritySecret(ctx, client, securitySecretKeyJWT, 32)
-	if err != nil {
-		return fmt.Errorf("ensure jwt secret: %w", err)
-	}
-	cfg.JWT.Secret = secret
-
-	if created {
-		log.Println("Warning: JWT secret auto-generated and persisted to database. Consider rotating to a managed secret for production.")
+	// Codex fingerprinting must never fall back to account.ID or a repository
+	// constant. Keep a deployment-scoped random value in the same shared secret
+	// store so replicas produce identical pseudonyms while separate deployments
+	// cannot collide by account numbering.
+	cfg.Gateway.CodexFingerprintSecret = strings.TrimSpace(cfg.Gateway.CodexFingerprintSecret)
+	if cfg.Gateway.CodexFingerprintSecret != "" {
+		storedSecret, err := createSecuritySecretIfAbsent(ctx, client, securitySecretKeyCodexFingerprint, cfg.Gateway.CodexFingerprintSecret)
+		if err != nil {
+			return fmt.Errorf("persist codex fingerprint secret: %w", err)
+		}
+		if storedSecret != cfg.Gateway.CodexFingerprintSecret {
+			log.Println("Warning: configured Codex fingerprint secret mismatches persisted value; using persisted value for cross-instance consistency.")
+		}
+		cfg.Gateway.CodexFingerprintSecret = storedSecret
+	} else {
+		secret, _, err := getOrCreateGeneratedSecuritySecret(ctx, client, securitySecretKeyCodexFingerprint, 32)
+		if err != nil {
+			return fmt.Errorf("ensure codex fingerprint secret: %w", err)
+		}
+		cfg.Gateway.CodexFingerprintSecret = secret
 	}
 	return nil
 }

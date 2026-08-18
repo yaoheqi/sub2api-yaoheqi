@@ -48,6 +48,7 @@ func TestOpenAIOAuthCompactHTTPBuildersUsePreservedServiceTierInRoutingHint(t *t
 	account := &Account{
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
+		Extra:    map[string]any{codexFingerprintModeExtraKey: string(codexFingerprintOff)},
 		Credentials: map[string]any{
 			"chatgpt_account_id": "test-account",
 		},

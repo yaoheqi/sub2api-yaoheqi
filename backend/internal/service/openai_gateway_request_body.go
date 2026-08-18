@@ -420,6 +420,20 @@ func IsForwardableOpenAIResponsesRequestPath(c *gin.Context) bool {
 	return ok
 }
 
+// IsCodexPrivacyResponsesRequestPathAllowed narrows the generic path guard for
+// privacy-enabled OAuth accounts. Client-controlled response IDs and unknown
+// suffixes are stable correlation material, so only the verified bare
+// Responses endpoint and exact compact endpoint enter the privacy pool.
+func IsCodexPrivacyResponsesRequestPathAllowed(c *gin.Context) bool {
+	rawSuffix := rawOpenAIResponsesRequestPathSuffix(c)
+	suffix, ok := sanitizedUpstreamPathSuffix(rawSuffix)
+	if !ok {
+		return false
+	}
+	suffix = strings.TrimSpace(suffix)
+	return suffix == "" || suffix == "/compact"
+}
+
 // rawOpenAIResponsesRequestPathSuffix 仅做提取，不做任何安全判断。
 func rawOpenAIResponsesRequestPathSuffix(c *gin.Context) string {
 	if c == nil || c.Request == nil || c.Request.URL == nil {

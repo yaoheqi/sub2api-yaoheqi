@@ -91,6 +91,11 @@ func (s *OpenAIGatewayService) ForwardCountTokensAsAnthropic(
 		writeAnthropicCountTokensError(c, http.StatusServiceUnavailable, "api_error", "No available OpenAI accounts")
 		return fmt.Errorf("count_tokens: missing account")
 	}
+	if codexPrivacyEnabled(account) {
+		err := codexPrivacyCapabilityError("count_tokens")
+		writeAnthropicCountTokensError(c, http.StatusNotImplemented, "invalid_request_error", err.Error())
+		return err
+	}
 
 	// 国产供应商（全部协议，含 anthropic）：一律本地估算，不发上游请求。
 	// 依据（2026-08 核实）：三家的 Anthropic 兼容层均未提供
@@ -182,14 +187,7 @@ func (s *OpenAIGatewayService) ForwardCountTokensAsAnthropic(
 			return nil
 		}
 
-		upstreamDetail := ""
-		if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-			maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
-			if maxBytes <= 0 {
-				maxBytes = 2048
-			}
-			upstreamDetail = truncateString(string(respBody), maxBytes)
-		}
+		upstreamDetail := s.codexPrivacyUpstreamErrorDetail(account, respBody)
 		setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 
 		errMsg := "Upstream request failed"

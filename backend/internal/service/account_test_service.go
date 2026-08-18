@@ -602,6 +602,9 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
 
 // testOpenAIAccountConnection tests an OpenAI account's connection
 func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account *Account, modelID string, prompt string, mode string) error {
+	if codexPrivacyEnabled(account) {
+		return s.sendErrorAndEnd(c, codexPrivacyCapabilityError("OpenAI account connectivity tests").Error())
+	}
 	ctx := c.Request.Context()
 	mode = normalizeAccountTestMode(mode)
 
@@ -639,6 +642,9 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 			return s.sendErrorAndEnd(c, err.Error())
 		}
 		credentialAccount = resolved
+	}
+	if codexPrivacyEnabled(credentialAccount) {
+		return s.sendErrorAndEnd(c, codexPrivacyCapabilityError("OpenAI account connectivity tests").Error())
 	}
 
 	// Determine authentication method and API URL
@@ -1989,6 +1995,12 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 // capability state on the account. The legacy unary /responses/compact
 // endpoint has been sunset upstream (404, #5598/#5624) and is no longer probed.
 func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account *Account, testModelID string) error {
+	// Keep the guard local to this raw probe as well as the public dispatcher.
+	// Future admin/test entry points must not accidentally recreate an
+	// unsanitized OAuth /responses request for a privacy-enabled account.
+	if codexPrivacyEnabled(account) {
+		return s.sendErrorAndEnd(c, codexPrivacyCapabilityError("OpenAI compact connectivity tests").Error())
+	}
 	ctx := c.Request.Context()
 	credentialAccount := account
 	if account.IsShadow() {
@@ -1997,6 +2009,9 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 			return s.sendErrorAndEnd(c, "Failed to resolve account credentials")
 		}
 		credentialAccount = resolved
+	}
+	if codexPrivacyEnabled(credentialAccount) {
+		return s.sendErrorAndEnd(c, codexPrivacyCapabilityError("OpenAI compact connectivity tests").Error())
 	}
 
 	authToken := ""
@@ -2074,6 +2089,9 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 		enforceCodexIdentityHeadersWithUA(req.Header, credentialAccount.GetOpenAIUserAgent())
 	}
 	probeSessionID := compactProbeSessionID(account.ID)
+	if isOAuth {
+		probeSessionID = compactProbeOAuthSessionID(account.ID)
+	}
 	req.Header.Set("Session_ID", probeSessionID)
 	req.Header.Set("Conversation_ID", probeSessionID)
 
@@ -2941,6 +2959,12 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 
 // testOpenAIImageOAuth tests OpenAI image generation using an OAuth account via Codex /responses API.
 func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Context, account *Account, modelID, prompt string) error {
+	// This helper constructs a direct /responses image request and therefore
+	// cannot claim the shared privacy finalizer. Fail closed if a future caller
+	// bypasses testOpenAIAccountConnection.
+	if codexPrivacyEnabled(account) {
+		return s.sendErrorAndEnd(c, codexPrivacyCapabilityError("OpenAI OAuth image connectivity tests").Error())
+	}
 	credentialAccount := account
 	if account.IsShadow() {
 		resolved, err := resolveCredentialAccount(ctx, s.accountRepo, account)
@@ -2948,6 +2972,9 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 			return s.sendErrorAndEnd(c, "Failed to resolve account credentials")
 		}
 		credentialAccount = resolved
+	}
+	if codexPrivacyEnabled(credentialAccount) {
+		return s.sendErrorAndEnd(c, codexPrivacyCapabilityError("OpenAI OAuth image connectivity tests").Error())
 	}
 	authToken := ""
 	if !credentialAccount.IsOpenAIAgentIdentity() {

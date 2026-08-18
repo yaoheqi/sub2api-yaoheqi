@@ -498,7 +498,9 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		return nil, false, nil
 	}
 	account = s.service.recheckSelectedOpenAIAccountFromDB(ctx, account, req.GroupID, req.Platform, req.RequestedModel, req.RequireCompact, req.RequiredCapability)
-	if account == nil || !s.service.openAIAccountMatchesSchedulingGroup(account, req.GroupID) || !s.isAccountTransportCompatible(account, req.RequiredTransport) {
+	if account == nil || !s.service.openAIAccountMatchesSchedulingGroup(account, req.GroupID) ||
+		(codexPrivacyEnabled(account) && req.RequiredImageCapability != "") ||
+		!s.isAccountTransportCompatible(account, req.RequiredTransport) {
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, false, nil
 	}
@@ -2166,8 +2168,21 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 	scheduler := s.getOpenAIAccountScheduler(ctx)
 	if scheduler == nil {
 		decision.Layer = openAIAccountScheduleLayerLoadBalance
+		// The legacy load-aware selector performs sticky lookup, candidate
+		// ordering, sticky writes, and slot acquisition internally. Pre-filter
+		// privacy OAuth accounts for image requests so none of those stages can
+		// touch them; non-privacy accounts retain the legacy selection behavior.
+		effectiveExcludedIDs := cloneExcludedAccountIDs(excludedIDs)
+		if requiredImageCapability != "" {
+			var filterErr error
+			effectiveExcludedIDs, filterErr = s.prepareLegacyImageCapabilityExclusions(
+				ctx, groupID, platform, sessionHash, effectiveExcludedIDs,
+			)
+			if filterErr != nil {
+				return nil, decision, filterErr
+			}
+		}
 		if requiredTransport == OpenAIUpstreamTransportAny || requiredTransport == OpenAIUpstreamTransportHTTPSSE {
-			effectiveExcludedIDs := cloneExcludedAccountIDs(excludedIDs)
 			for {
 				selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, platform, sessionHash, requestedModel, effectiveExcludedIDs, requireCompact, requiredCapability, useUpstreamTokenCost)
 				if err != nil {
@@ -2192,7 +2207,6 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 			}
 		}
 
-		effectiveExcludedIDs := cloneExcludedAccountIDs(excludedIDs)
 		for {
 			selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, platform, sessionHash, requestedModel, effectiveExcludedIDs, requireCompact, requiredCapability, useUpstreamTokenCost)
 			if err != nil {
@@ -2277,6 +2291,87 @@ func cloneExcludedAccountIDs(excludedIDs map[int64]struct{}) map[int64]struct{} 
 	return cloned
 }
 
+// prepareLegacyImageCapabilityExclusions keeps privacy-enabled OAuth accounts
+// out of the legacy image selector before it can acquire a slot or write sticky
+// state. API-key and privacy-opt-out OAuth accounts retain the selector's prior
+// behavior; this privacy boundary must not broaden image capability policy for
+// non-privacy accounts.
+func (s *OpenAIGatewayService) prepareLegacyImageCapabilityExclusions(
+	ctx context.Context,
+	groupID *int64,
+	platform string,
+	sessionHash string,
+	excludedIDs map[int64]struct{},
+) (map[int64]struct{}, error) {
+	effective := cloneExcludedAccountIDs(excludedIDs)
+	accounts, err := s.listSchedulableAccounts(ctx, groupID, platform)
+	if err != nil {
+		return nil, err
+	}
+
+	incompatible := make(map[int64]struct{})
+	freshByID := make(map[int64]*Account, len(accounts))
+	for i := range accounts {
+		candidate := &accounts[i]
+		freshByID[candidate.ID] = candidate
+		if !candidate.IsOpenAIOAuth() {
+			continue
+		}
+		// The scheduler snapshot can briefly retain the old opt-out state after
+		// an account switches to the default privacy policy. Evaluate image
+		// privacy against the OAuth database row before the legacy selector can
+		// acquire a slot or refresh/write sticky state. API-key rows deliberately
+		// bypass this extra read and preserve their previous scheduling semantics.
+		if s.schedulerSnapshot != nil && s.accountRepo != nil {
+			latest, latestErr := s.accountRepo.GetByID(ctx, candidate.ID)
+			if latestErr != nil || latest == nil {
+				incompatible[candidate.ID] = struct{}{}
+				continue
+			}
+			candidate = latest
+		}
+		freshByID[candidate.ID] = candidate
+		if codexPrivacyEnabled(candidate) {
+			incompatible[accounts[i].ID] = struct{}{}
+		}
+	}
+
+	if strings.TrimSpace(sessionHash) != "" && s.cache != nil {
+		stickyID, stickyErr := s.getStickySessionAccountID(ctx, groupID, sessionHash)
+		if stickyErr == nil && stickyID > 0 {
+			sticky := freshByID[stickyID]
+			if sticky != nil && sticky.IsOpenAIOAuth() && s.accountRepo != nil {
+				if latest, latestErr := s.accountRepo.GetByID(ctx, stickyID); latestErr == nil {
+					sticky = latest
+				} else {
+					incompatible[stickyID] = struct{}{}
+					_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+					sticky = nil
+				}
+			}
+			_, rejected := incompatible[stickyID]
+			if sticky == nil && !rejected {
+				sticky, _ = s.getSchedulableAccount(ctx, stickyID)
+			}
+			if sticky == nil || codexPrivacyEnabled(sticky) {
+				incompatible[stickyID] = struct{}{}
+				_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+			}
+		}
+	}
+
+	if len(incompatible) == 0 {
+		return effective, nil
+	}
+	if effective == nil {
+		effective = make(map[int64]struct{}, len(incompatible))
+	}
+	for accountID := range incompatible {
+		effective[accountID] = struct{}{}
+	}
+	return effective, nil
+}
+
 func (s *OpenAIGatewayService) isOpenAIAccountTransportCompatible(account *Account, requiredTransport OpenAIUpstreamTransport) bool {
 	if requiredTransport == OpenAIUpstreamTransportAny || requiredTransport == OpenAIUpstreamTransportHTTPSSE {
 		return true
@@ -2285,6 +2380,12 @@ func (s *OpenAIGatewayService) isOpenAIAccountTransportCompatible(account *Accou
 		return false
 	}
 	if requiredTransport == OpenAIUpstreamTransportResponsesWebsocketV2Ingress {
+		// The ingress transport relays opaque client frames and has no strict
+		// Codex privacy sanitizer. Keep privacy OAuth accounts out of scheduler
+		// candidates even when mode_router_v2 would otherwise accept any mode.
+		if codexPrivacyEnabled(account) {
+			return false
+		}
 		if s.cfg == nil || !s.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled {
 			return s.getOpenAIWSProtocolResolver().Resolve(account).Transport == OpenAIUpstreamTransportResponsesWebsocketV2
 		}

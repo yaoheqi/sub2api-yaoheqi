@@ -197,8 +197,8 @@ func TestFetchCodexModelsManifestPassthrough(t *testing.T) {
 	if gotOriginator != openai.CodexDefaultOriginator {
 		t.Errorf("originator header: got %q", gotOriginator)
 	}
-	if gotClientVersion != "0.137.0" {
-		t.Errorf("client_version query: got %q", gotClientVersion)
+	if gotClientVersion != openAICodexProbeVersion {
+		t.Errorf("privacy client_version query: got %q, want %q", gotClientVersion, openAICodexProbeVersion)
 	}
 }
 
@@ -208,6 +208,7 @@ func TestFetchCodexModelsManifestAgentIdentityUsesAssertionWithoutOAuthToken(t *
 		ID:       3,
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
+		Extra:    map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"auth_mode":          OpenAIAuthModeAgentIdentity,
 			"agent_runtime_id":   key.runtimeID,
@@ -251,6 +252,7 @@ func TestFetchCodexModelsManifestAgentIdentityRecoversInvalidTaskOnce(t *testing
 		ID:       4,
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
+		Extra:    map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"auth_mode":          OpenAIAuthModeAgentIdentity,
 			"agent_runtime_id":   key.runtimeID,
@@ -305,6 +307,7 @@ func TestFetchCodexModelsManifestAgentIdentityRedactsUpstreamErrors(t *testing.T
 		ID:       5,
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
+		Extra:    map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"auth_mode":          OpenAIAuthModeAgentIdentity,
 			"agent_runtime_id":   key.runtimeID,
@@ -374,8 +377,8 @@ func TestFetchCodexModelsManifestNotModified(t *testing.T) {
 	if !manifest.NotModified {
 		t.Error("expected NotModified to be true")
 	}
-	if gotIfNoneMatch != `W/"abc123"` {
-		t.Errorf("if-none-match header: got %q", gotIfNoneMatch)
+	if gotIfNoneMatch != "" {
+		t.Errorf("privacy request must not forward client if-none-match: got %q", gotIfNoneMatch)
 	}
 }
 

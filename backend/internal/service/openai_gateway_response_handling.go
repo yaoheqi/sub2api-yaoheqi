@@ -68,8 +68,10 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	// 客户端会在同回合的后续请求中回带（openai_codex_turn_state.go）。
 	// 首输出守卫模式下只暂存，溯源在 applyAttemptResponseHeaders 真正提交时记录。
 	if guardFirstOutput {
-		stageOpenAICodexTurnState(&attemptResponseHeaders, resp.Header)
-	} else {
+		if !codexPrivacyEnabled(account) {
+			stageOpenAICodexTurnState(&attemptResponseHeaders, resp.Header)
+		}
+	} else if !codexPrivacyEnabled(account) {
 		s.relayOpenAICodexTurnState(c, account, resp.Header)
 	}
 
@@ -95,7 +97,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		}
 		// 暂存头此刻才真正写给客户端：turn-state 溯源在这里记录（见
 		// noteStagedOpenAICodexTurnStateCommitted 的 failover 说明）。
-		s.noteStagedOpenAICodexTurnStateCommitted(c, account, attemptResponseHeaders)
+		if !codexPrivacyEnabled(account) {
+			s.noteStagedOpenAICodexTurnStateCommitted(c, account, attemptResponseHeaders)
+		}
 		// These headers describe this gateway's SSE stream and are stable across
 		// account attempts. Keep them authoritative over upstream values.
 		c.Header("Content-Type", "text/event-stream")
@@ -462,10 +466,11 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				// 而漏记真实用量。对齐 WS V2 / Chat 流式路径（均先解析 usage 再 Mark）。
 				s.parseSSEUsageBytes(dataBytes, usage)
 				if hit, code, msg := detectOpenAICyberPolicy(dataBytes); hit {
+					safeMsg := codexPrivacyUpstreamMessage(account, http.StatusOK, msg)
 					MarkOpsCyberPolicy(c, CyberPolicyMark{
 						Code:           code,
-						Message:        msg,
-						Body:           truncateString(string(dataBytes), 4096),
+						Message:        safeMsg,
+						Body:           codexPrivacyBodyMarker(account, dataBytes, 4096),
 						UpstreamStatus: http.StatusOK,
 						UpstreamInTok:  usage.InputTokens,
 						UpstreamOutTok: usage.OutputTokens,
@@ -1279,7 +1284,9 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	// Codex 协议要求 /responses/compact JSON 响应携带 x-codex-turn-state
 	// （codex-api/src/endpoint/compact.rs 从响应头捕获），显式回传。
-	s.relayOpenAICodexTurnState(c, account, resp.Header)
+	if !codexPrivacyEnabled(account) {
+		s.relayOpenAICodexTurnState(c, account, resp.Header)
+	}
 
 	contentType := "application/json"
 	if s.cfg != nil && !s.cfg.Security.ResponseHeaders.Enabled {
@@ -1375,7 +1382,9 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 	}
 
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
-	s.relayOpenAICodexTurnState(c, account, resp.Header)
+	if !codexPrivacyEnabled(account) {
+		s.relayOpenAICodexTurnState(c, account, resp.Header)
+	}
 
 	contentType := "application/json; charset=utf-8"
 	if !ok {

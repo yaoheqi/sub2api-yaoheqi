@@ -244,6 +244,21 @@ func (s *OpenAIGatewayService) FetchCodexModelsManifest(ctx context.Context, acc
 	if clientVersion == "" {
 		clientVersion = CodexCanonicalClientVersion()
 	}
+	if codexPrivacyEnabled(credAccount) {
+		if credAccount.IsOpenAIAgentIdentity() {
+			return nil, infraerrors.New(
+				http.StatusNotImplemented,
+				"OPENAI_CODEX_MODELS_PRIVACY_UNSUPPORTED",
+				codexPrivacyCapabilityError("Agent Identity Codex models manifests").Error(),
+			)
+		}
+		// client_version and If-None-Match are caller-controlled correlation
+		// material. Privacy accounts always use the gateway's canonical tuple;
+		// upstream cache validators are managed internally, never forwarded
+		// from the downstream client.
+		clientVersion = openAICodexProbeVersion
+		ifNoneMatch = ""
+	}
 
 	requestEndpoint := chatgptCodexModelsURL
 	authToken := ""

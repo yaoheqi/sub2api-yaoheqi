@@ -243,3 +243,18 @@ func TestAccountServiceCreateAndUpdateCodexSeedLifecycle(t *testing.T) {
 	require.Equal(t, createdSeed, requireValidCodexFingerprintSeed(t, updated.Extra))
 	require.Equal(t, "full", updated.Extra[codexFingerprintModeExtraKey])
 }
+
+func TestNewOpenAIOAuthDefaultsToDeviceAndSessionConvergence(t *testing.T) {
+	repo := &upstreamBillingProbeAccountRepo{accounts: make(map[int64]*Account)}
+
+	account, err := NewAccountService(repo, nil).Create(context.Background(), CreateAccountRequest{
+		Name:     "default-codex-oauth",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, string(codexFingerprintSession), account.Extra[codexFingerprintModeExtraKey])
+	requireValidCodexFingerprintSeed(t, account.Extra)
+	require.Equal(t, codexFingerprintSession, account.GetCodexFingerprintMode())
+}

@@ -325,7 +325,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 
 	// Override session_id with a deterministic UUID derived from the isolated
 	// session key, ensuring different API keys produce different upstream sessions.
-	if account.Platform != PlatformGrok && promptCacheKey != "" {
+	if account.Platform != PlatformGrok && promptCacheKey != "" && !codexPrivacyEnabled(account) {
 		isolatedSessionID := generateSessionUUID(isolateOpenAISessionID(apiKeyID, promptCacheKey))
 		upstreamReq.Header.Set("session_id", isolatedSessionID)
 		if upstreamReq.Header.Get("conversation_id") != "" {
@@ -349,6 +349,13 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 	if compatTurnState != "" && upstreamReq.Header.Get("x-codex-turn-state") == "" {
 		upstreamReq.Header.Set("x-codex-turn-state", compatTurnState)
+	}
+	// Messages compatibility restores identity/turn headers after the shared
+	// builder. Run the same final privacy invariant again so compat state cannot
+	// become an opaque metadata bypass.
+	if codexPrivacyEnabled(account) {
+		privacyIDs := ensureStagedCodexFingerprintIDs(c, account, s.codexFingerprintSecret())
+		sanitizeCodexPrivacyHeaders(upstreamReq.Header, account, privacyIDs, responsesBody, s.codexFingerprintSecret())
 	}
 
 	// 7. Send request
@@ -569,10 +576,11 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 	if strings.TrimSpace(finalResponse.Status) == "failed" {
 		payload, _ := json.Marshal(gin.H{"type": "response.failed", "response": finalResponse})
 		if hit, code, msg := detectOpenAICyberPolicy(payload); hit {
+			safeMsg := codexPrivacyUpstreamMessage(account, http.StatusOK, msg)
 			MarkOpsCyberPolicy(c, CyberPolicyMark{
 				Code:           code,
-				Message:        msg,
-				Body:           truncateString(string(payload), 4096),
+				Message:        safeMsg,
+				Body:           codexPrivacyBodyMarker(account, payload, 4096),
 				UpstreamStatus: http.StatusOK,
 				UpstreamInTok:  usage.InputTokens,
 				UpstreamOutTok: usage.OutputTokens,
@@ -944,10 +952,11 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 			if eventType == "response.failed" || isBareErrorEvent {
 				payloadBytes := []byte(payload)
 				if hit, code, msg := detectOpenAICyberPolicy(payloadBytes); hit {
+					safeMsg := codexPrivacyUpstreamMessage(account, http.StatusOK, msg)
 					MarkOpsCyberPolicy(c, CyberPolicyMark{
 						Code:           code,
-						Message:        msg,
-						Body:           truncateString(payload, 4096),
+						Message:        safeMsg,
+						Body:           codexPrivacyBodyMarker(account, payloadBytes, 4096),
 						UpstreamStatus: http.StatusOK,
 						UpstreamInTok:  usage.InputTokens,
 						UpstreamOutTok: usage.OutputTokens,

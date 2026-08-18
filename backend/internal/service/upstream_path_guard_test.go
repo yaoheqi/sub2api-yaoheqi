@@ -180,6 +180,23 @@ func TestAppendOpenAIResponsesRequestPathSuffixRefusesUnsafeSuffix(t *testing.T)
 	require.Equal(t, chatgptCodexURL+"/compact", appendOpenAIResponsesRequestPathSuffix(chatgptCodexURL, "/compact"))
 }
 
+func TestCodexPrivacyResponsesPathAllowsOnlyExactEndpoints(t *testing.T) {
+	for path, want := range map[string]bool{
+		"/v1/responses":                      true,
+		"/v1/responses/compact":              true,
+		"/v1/responses/compact/attacker_tag": false,
+		"/v1/responses/resp_123/cancel":      false,
+		"/v1/responses/compact%2f..":         false,
+		"/v1/responses/%2e%2e/%2e%2e/x":      false,
+		"/v1/responses/..%2f..%2fx":          false,
+	} {
+		t.Run(path, func(t *testing.T) {
+			c := newResponsesSuffixTestContext(t, path)
+			require.Equal(t, want, IsCodexPrivacyResponsesRequestPathAllowed(c))
+		})
+	}
+}
+
 func newResponsesSuffixTestContext(t *testing.T, path string) *gin.Context {
 	t.Helper()
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())

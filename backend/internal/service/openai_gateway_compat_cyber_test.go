@@ -22,6 +22,7 @@ func compatCyberOAuthAccount() *Account {
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
+		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",

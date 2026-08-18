@@ -38,6 +38,7 @@ func TestAccountTestService_OpenAIImageOAuthHandlesOutputItemDoneFallback(t *tes
 		Name:     "openai-oauth",
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
+		Extra:    map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{
 			"access_token": "token-123",
 		},

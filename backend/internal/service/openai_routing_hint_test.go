@@ -14,7 +14,11 @@ import (
 )
 
 func TestSetOpenAICodexRoutingHintCanonicalizesOfficialServiceTiers(t *testing.T) {
-	oauthAccount := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	oauthAccount := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra:    map[string]any{codexFingerprintModeExtraKey: string(codexFingerprintOff)},
+	}
 	tests := []struct {
 		name        string
 		model       string
@@ -77,6 +81,7 @@ func TestOpenAIOAuthHTTPBuildersSendRoutingHintFromFinalBody(t *testing.T) {
 	oauthAccount := &Account{
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
+		Extra:    map[string]any{codexFingerprintModeExtraKey: string(codexFingerprintOff)},
 		Credentials: map[string]any{
 			"chatgpt_account_id": "test-account",
 		},
@@ -151,6 +156,7 @@ func TestOpenAIHTTPPassthroughStripsOnlyOAuthLegacyResponsesBeta(t *testing.T) {
 	oauth := &Account{
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
+		Extra:    map[string]any{codexFingerprintModeExtraKey: string(codexFingerprintOff)},
 		Credentials: map[string]any{
 			"chatgpt_account_id": "test-account",
 		},

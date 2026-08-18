@@ -881,6 +881,11 @@ const (
 
 // GatewayConfig API网关相关配置
 type GatewayConfig struct {
+	// CodexFingerprintSecret is a deployment-scoped secret used to derive
+	// pseudonymous Codex identity values. It is persisted in security_secrets
+	// when omitted, so all replicas of one deployment share a value while
+	// separate databases get different fingerprints.
+	CodexFingerprintSecret string `mapstructure:"codex_fingerprint_secret"`
 	// 等待上游响应头的超时时间（秒），0表示无超时
 	// 注意：这不影响流式数据传输，只控制等待响应头的时间
 	ResponseHeaderTimeout int `mapstructure:"response_header_timeout"`
@@ -2199,6 +2204,10 @@ func setDefaults() {
 	viper.SetDefault("jwt.access_token_expire_minutes", 0) // 0 表示回退到 expire_hour
 	viper.SetDefault("jwt.refresh_token_expire_days", 30)  // 30天Refresh Token有效期
 	viper.SetDefault("jwt.refresh_window_minutes", 2)      // 过期前2分钟开始允许刷新
+
+	// Codex privacy identity. An empty value is filled from the shared
+	// security_secrets store during database bootstrap.
+	viper.SetDefault("gateway.codex_fingerprint_secret", "")
 
 	// TOTP
 	viper.SetDefault("totp.encryption_key", "")

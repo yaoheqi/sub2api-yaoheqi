@@ -170,6 +170,7 @@ func TestAccountTestService_OpenAISuccessPersistsSnapshotFromHeaders(t *testing.
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
+		Extra:       map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{"access_token": "test-token"},
 	}
 
@@ -245,6 +246,7 @@ func TestAccountTestService_OpenAIOAuthTestNormalizesGPT56Alias(t *testing.T) {
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
+		Extra:       map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{"access_token": "test-token"},
 	}
 
@@ -342,6 +344,7 @@ func TestAccountTestService_OpenAIStreamEOFBeforeCompletedFails(t *testing.T) {
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
+		Extra:       map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{"access_token": "test-token"},
 	}
 
@@ -372,6 +375,7 @@ func TestAccountTestService_OpenAI429PersistsSnapshotAndRateLimitState(t *testin
 		Type:        AccountTypeOAuth,
 		Status:      StatusError,
 		Concurrency: 1,
+		Extra:       map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{"access_token": "test-token"},
 	}
 
@@ -469,6 +473,7 @@ func TestAccountTestService_OpenAI429BodyOnlyPersistsRateLimitAndClearsStaleErro
 		Status:       StatusError,
 		ErrorMessage: "Access forbidden (403): account may be suspended or lack permissions",
 		Concurrency:  1,
+		Extra:        map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials:  map[string]any{"access_token": "test-token"},
 	}
 
@@ -498,6 +503,7 @@ func TestAccountTestService_OpenAI429SyncsObservedPlanType(t *testing.T) {
 		Type:        AccountTypeOAuth,
 		Status:      StatusActive,
 		Concurrency: 1,
+		Extra:       map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{"access_token": "test-token", "plan_type": "plus"},
 	}
 
@@ -525,6 +531,7 @@ func TestAccountTestService_OpenAI429ActiveAccountDoesNotClearError(t *testing.T
 		Type:        AccountTypeOAuth,
 		Status:      StatusActive,
 		Concurrency: 1,
+		Extra:       map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{"access_token": "test-token"},
 	}
 
@@ -553,6 +560,7 @@ func TestAccountTestService_OpenAI429WithoutResetSignalUsesFallbackCooldown(t *t
 		Status:       StatusError,
 		ErrorMessage: "stale 403",
 		Concurrency:  1,
+		Extra:        map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials:  map[string]any{"access_token": "test-token"},
 	}
 
@@ -582,6 +590,7 @@ func TestAccountTestService_OpenAI401SetsPermanentErrorOnly(t *testing.T) {
 		Type:        AccountTypeOAuth,
 		Status:      StatusActive,
 		Concurrency: 1,
+		Extra:       map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{"access_token": "test-token"},
 	}
 

@@ -64,6 +64,14 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	if err := validateOpenAIWSBearerToken(account, token); err != nil {
 		return err
 	}
+	// WS ingress forwards opaque frames and does not run the HTTP Responses
+	// privacy finalizer. Refuse privacy-enabled OAuth accounts at the direct
+	// service boundary as defense in depth for internal callers and future
+	// routing changes.
+	if codexPrivacyEnabled(account) {
+		policyErr := codexPrivacyCapabilityError("Responses WebSocket ingress")
+		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, policyErr.Error(), policyErr)
+	}
 
 	// 预取一次 OpenAI Fast Policy settings，绑定到 ctx，让该 WS session
 	// 内所有帧的 evaluateOpenAIFastPolicy 调用复用同一份快照，避免每帧

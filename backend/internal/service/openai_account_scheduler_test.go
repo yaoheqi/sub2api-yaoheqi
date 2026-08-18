@@ -729,6 +729,166 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_AlphaSearchAllowsAPIKey
 	require.Equal(t, int64(38001), selection.Account.ID)
 }
 
+func TestOpenAIGatewayService_SelectAccountWithScheduler_ExcludesPrivacyOAuthForDisabledHTTPCapabilities(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10126)
+	newService := func(accounts []Account) *OpenAIGatewayService {
+		cfg := &config.Config{}
+		cfg.Gateway.Scheduling.LoadBatchEnabled = false
+		return &OpenAIGatewayService{
+			accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+			cache:              &schedulerTestGatewayCache{},
+			cfg:                cfg,
+			concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+		}
+	}
+
+	privacy := Account{
+		ID: 39001, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+		Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0,
+	}
+	apiKey := Account{
+		ID: 39002, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 10,
+	}
+	offOAuth := Account{
+		ID: 39003, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+		Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 10,
+		Extra: map[string]any{codexFingerprintModeExtraKey: string(codexFingerprintOff)},
+	}
+
+	t.Run("alpha search falls back to API key", func(t *testing.T) {
+		selection, _, err := newService([]Account{privacy, apiKey}).SelectAccountWithSchedulerForCapability(
+			ctx, &groupID, "", "alpha-route", "gpt-5.6-sol", nil,
+			OpenAIUpstreamTransportHTTPSSE, OpenAIEndpointCapabilityAlphaSearch,
+			false, false, false,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, selection)
+		require.NotNil(t, selection.Account)
+		require.Equal(t, int64(39002), selection.Account.ID)
+		if selection.ReleaseFunc != nil {
+			selection.ReleaseFunc()
+		}
+	})
+
+	t.Run("count tokens falls back to API key", func(t *testing.T) {
+		selection, _, err := newService([]Account{privacy, apiKey}).SelectAccountWithSchedulerForCapability(
+			ctx, &groupID, "", "count-route", "gpt-5.6-sol", nil,
+			OpenAIUpstreamTransportHTTPSSE, OpenAIEndpointCapabilityCountTokens,
+			false, false, false,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, selection)
+		require.NotNil(t, selection.Account)
+		require.Equal(t, int64(39002), selection.Account.ID)
+		if selection.ReleaseFunc != nil {
+			selection.ReleaseFunc()
+		}
+	})
+
+	t.Run("ordinary chat still selects privacy OAuth", func(t *testing.T) {
+		selection, _, err := newService([]Account{privacy, apiKey}).SelectAccountWithSchedulerForCapability(
+			ctx, &groupID, "", "chat-route", "gpt-5.6-sol", nil,
+			OpenAIUpstreamTransportHTTPSSE, OpenAIEndpointCapabilityChatCompletions,
+			false, false, false,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, selection)
+		require.NotNil(t, selection.Account)
+		require.Equal(t, int64(39001), selection.Account.ID)
+		if selection.ReleaseFunc != nil {
+			selection.ReleaseFunc()
+		}
+	})
+
+	t.Run("ordinary responses still selects privacy OAuth", func(t *testing.T) {
+		selection, _, err := newService([]Account{privacy, apiKey}).SelectAccountWithSchedulerForCapability(
+			ctx, &groupID, "", "responses-route", "gpt-5.6-sol", nil,
+			OpenAIUpstreamTransportHTTPSSE, OpenAIEndpointCapabilityResponses,
+			false, false, false,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, selection)
+		require.NotNil(t, selection.Account)
+		require.Equal(t, int64(39001), selection.Account.ID)
+		if selection.ReleaseFunc != nil {
+			selection.ReleaseFunc()
+		}
+	})
+
+	t.Run("live falls back to explicit privacy opt out OAuth", func(t *testing.T) {
+		selection, _, err := newService([]Account{privacy, offOAuth}).SelectAccountWithSchedulerForCapability(
+			ctx, &groupID, "", "live-route", "", nil,
+			OpenAIUpstreamTransportHTTPSSE, OpenAIEndpointCapabilityLive,
+			false, false, false,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, selection)
+		require.NotNil(t, selection.Account)
+		require.Equal(t, int64(39003), selection.Account.ID)
+		if selection.ReleaseFunc != nil {
+			selection.ReleaseFunc()
+		}
+	})
+
+	t.Run("images falls back to API key", func(t *testing.T) {
+		selection, _, err := newService([]Account{privacy, apiKey}).SelectAccountWithSchedulerForImages(
+			ctx, &groupID, "image-route", "gpt-image-2", nil, OpenAIImagesCapabilityBasic,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, selection)
+		require.NotNil(t, selection.Account)
+		require.Equal(t, int64(39002), selection.Account.ID)
+		if selection.ReleaseFunc != nil {
+			selection.ReleaseFunc()
+		}
+	})
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_LegacyImagesClearsPrivacyStickyBeforeAcquire(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10127)
+	privacy := Account{
+		ID: 39011, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+		Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0,
+	}
+	apiKey := Account{
+		ID: 39012, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 10,
+	}
+	cache := &schedulerTestGatewayCache{
+		sessionBindings: map[string]int64{"openai:stale-image": privacy.ID},
+	}
+	acquiredIDs := make([]int64, 0, 1)
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{privacy, apiKey}},
+		cache:              cache,
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{acquiredIDs: &acquiredIDs}),
+	}
+
+	selection, _, err := svc.SelectAccountWithSchedulerForImages(
+		ctx, &groupID, "stale-image", "gpt-image-2", nil, OpenAIImagesCapabilityBasic,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, apiKey.ID, selection.Account.ID)
+	require.Equal(t, 1, cache.deletedSessions["openai:stale-image"])
+	require.Equal(t, apiKey.ID, cache.sessionBindings["openai:stale-image"])
+	require.NotContains(t, acquiredIDs, privacy.ID)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_AllowsGrokChatAccount(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 

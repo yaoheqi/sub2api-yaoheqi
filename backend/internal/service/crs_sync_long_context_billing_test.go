@@ -128,6 +128,46 @@ func TestCRSSyncOpenAILongContextBilling(t *testing.T) {
 	}
 }
 
+func TestCRSSyncOpenAIOAuthAppliesFingerprintLifecycle(t *testing.T) {
+	t.Run("create defaults to session with managed seed", func(t *testing.T) {
+		repo := newCRSLongContextAccountRepo()
+		result := runCRSOpenAILongContextSync(t, repo, crsOpenAILongContextSource{
+			collection:  "openaiOAuthAccounts",
+			credentials: map[string]any{"access_token": "oauth-token"},
+		})
+		require.Len(t, result.Items, 1)
+		require.Equal(t, "created", result.Items[0].Action)
+		stored := repo.accounts["crs-openai-1"]
+		require.NotNil(t, stored)
+		require.Equal(t, codexFingerprintSession, stored.GetCodexFingerprintMode())
+		require.Equal(t, string(codexFingerprintSession), stored.Extra[codexFingerprintModeExtraKey])
+		seed, ok := codexFingerprintSeed(stored.Extra)
+		require.True(t, ok)
+		require.NotEmpty(t, seed)
+	})
+
+	t.Run("update creates seed without replacing existing policy", func(t *testing.T) {
+		existing := &Account{
+			ID:       41,
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra:    map[string]any{"crs_account_id": "crs-openai-1"},
+		}
+		repo := newCRSLongContextAccountRepo(existing)
+		result := runCRSOpenAILongContextSync(t, repo, crsOpenAILongContextSource{
+			collection:  "openaiOAuthAccounts",
+			credentials: map[string]any{"access_token": "oauth-token"},
+		})
+		require.Len(t, result.Items, 1)
+		require.Equal(t, "updated", result.Items[0].Action)
+		stored := repo.accounts["crs-openai-1"]
+		seed, ok := codexFingerprintSeed(stored.Extra)
+		require.True(t, ok)
+		require.NotEmpty(t, seed)
+		require.Equal(t, codexFingerprintSession, stored.GetCodexFingerprintMode())
+	})
+}
+
 func runCRSOpenAILongContextSync(t *testing.T, repo AccountRepository, source crsOpenAILongContextSource) *SyncFromCRSResult {
 	t.Helper()
 	account := map[string]any{

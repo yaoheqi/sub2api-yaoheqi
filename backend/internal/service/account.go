@@ -89,9 +89,14 @@ const openAILongContextBillingEnabledKey = "openai_long_context_billing_enabled"
 
 const (
 	OpenAIEndpointCapabilityChatCompletions OpenAIEndpointCapability = "chat_completions"
-	OpenAIEndpointCapabilityEmbeddings      OpenAIEndpointCapability = "embeddings"
-	OpenAIEndpointCapabilityAlphaSearch     OpenAIEndpointCapability = "alpha_search"
-	OpenAIEndpointCapabilityLive            OpenAIEndpointCapability = "live"
+	// OpenAIEndpointCapabilityCountTokens mirrors the chat-completions account
+	// pool but excludes privacy-enabled OAuth accounts before selection. Their
+	// opaque input_tokens request path is intentionally disabled by the privacy
+	// policy, so selecting one would prevent fallback to a compatible account.
+	OpenAIEndpointCapabilityCountTokens OpenAIEndpointCapability = "count_tokens"
+	OpenAIEndpointCapabilityEmbeddings  OpenAIEndpointCapability = "embeddings"
+	OpenAIEndpointCapabilityAlphaSearch OpenAIEndpointCapability = "alpha_search"
+	OpenAIEndpointCapabilityLive        OpenAIEndpointCapability = "live"
 	// OpenAIEndpointCapabilityGrokMediaGeneration keeps image/video generation
 	// away from Grok accounts that are explicitly disabled or whose billing
 	// entitlement probe was forbidden. Video status lookups intentionally do not
@@ -1626,7 +1631,7 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 	}
 	if a.IsGrok() {
 		switch capability {
-		case OpenAIEndpointCapabilityChatCompletions:
+		case OpenAIEndpointCapabilityChatCompletions, OpenAIEndpointCapabilityCountTokens:
 			return true
 		case OpenAIEndpointCapabilityGrokMediaGeneration:
 			eligible, reason := a.GrokMediaGenerationEligibility()
@@ -1641,7 +1646,15 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 	}
 	switch capability {
 	case OpenAIEndpointCapabilityChatCompletions:
+	case OpenAIEndpointCapabilityCountTokens:
+		if codexPrivacyEnabled(a) {
+			return false
+		}
+		capability = OpenAIEndpointCapabilityChatCompletions
 	case OpenAIEndpointCapabilityLive:
+		if codexPrivacyEnabled(a) {
+			return false
+		}
 		return a.Platform == PlatformOpenAI &&
 			a.Type == AccountTypeOAuth &&
 			!a.IsOpenAIPersonalAccessToken() &&
@@ -1658,6 +1671,9 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 		// 配置集校验。
 		capability = OpenAIEndpointCapabilityChatCompletions
 	case OpenAIEndpointCapabilityAlphaSearch:
+		if codexPrivacyEnabled(a) {
+			return false
+		}
 		// alpha/search 的转发按账号类型分流：OAuth/PAT 走
 		// chatgpt.com/backend-api/codex/alpha/search，API key 走
 		// {base_url}/v1/alpha/search（见 openAIAlphaSearchURL），两类账号
@@ -1781,6 +1797,9 @@ func (a *Account) SupportsOpenAIImageCapability(capability OpenAIImagesCapabilit
 		return true
 	}
 	if !a.IsOpenAI() {
+		return false
+	}
+	if codexPrivacyEnabled(a) {
 		return false
 	}
 	switch capability {

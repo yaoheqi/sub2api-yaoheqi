@@ -457,6 +457,11 @@ interface Props {
   clickableRows?: boolean
   /** Estimated row height in px for the virtualizer (default 56) */
   estimateRowHeight?: number
+  /**
+   * Fixed row height for virtualized tables. When set, rows are not measured
+   * after render, preventing scroll-position compensation while dragging.
+   */
+  fixedRowHeight?: number
   /** Number of rows to render beyond the visible area (default 5) */
   overscan?: number
   /**
@@ -766,7 +771,7 @@ const rowVirtualizer = useVirtualizer(computed(() => ({
     const row = sortedData.value?.[index]
     return row != null ? resolveRowKey(row, index) : index
   },
-  estimateSize: () => props.estimateRowHeight ?? 56,
+  estimateSize: () => props.fixedRowHeight ?? props.estimateRowHeight ?? 56,
   overscan: props.overscan ?? 5,
   // 兜底高度:首个有效高度读数到来前,先按一屏渲染,避免空白帧
   initialRect: { width: 0, height: estimatedViewportHeight() },
@@ -826,6 +831,10 @@ watch(
   (current, previous) => {
     if (hasSameRowIdentitySet(current, previous)) return
 
+    // Fixed-height tables do not keep per-row measurements, so replacing a
+    // page must not trigger a measurement pass that can compensate scroll.
+    if (props.fixedRowHeight !== undefined) return
+
     // The virtualizer owns caches across option updates. A new page/filter result
     // must release detached rows and sizes, while pure reordering keeps them.
     rowVirtualizer.value.measureElement(null)
@@ -839,7 +848,11 @@ watch(
 const renderRows = computed<Array<{ index: number; row: any; measure: boolean }>>(() => {
   const data = sortedData.value ?? []
   if (shouldVirtualize.value) {
-    return virtualItems.value.map(vr => ({ index: vr.index, row: data[vr.index], measure: true }))
+    return virtualItems.value.map(vr => ({
+      index: vr.index,
+      row: data[vr.index],
+      measure: props.fixedRowHeight === undefined
+    }))
   }
   return data.map((row, index) => ({ index, row, measure: false }))
 })

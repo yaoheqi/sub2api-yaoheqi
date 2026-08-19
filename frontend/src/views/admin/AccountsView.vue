@@ -208,8 +208,9 @@
           default-sort-order="asc"
           :sort-storage-key="ACCOUNT_SORT_STORAGE_KEY"
           :estimate-row-height="72"
+          :fixed-row-height="72"
           :overscan="5"
-          :virtualize-threshold="100"
+          :virtualize-threshold="50"
         >
           <template #header-select>
             <input

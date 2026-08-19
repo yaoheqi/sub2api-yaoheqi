@@ -122,6 +122,24 @@ describe('DataTable', () => {
     expect(instance.options.count).toBe(data.length)
   })
 
+  it('uses a fixed virtual row height without measuring rendered rows', async () => {
+    const data = Array.from({ length: 12 }, (_, i) => ({ id: i + 1, name: `Row ${i + 1}` }))
+    const wrapper = mount(DataTable, {
+      props: {
+        columns: [{ key: 'name', label: 'Name' }],
+        data,
+        fixedRowHeight: 72,
+        virtualizeThreshold: 3
+      }
+    })
+
+    await wrapper.vm.$nextTick()
+
+    const exposed = (wrapper.vm as any).virtualizer
+    const instance = exposed?.value ?? exposed
+    expect(instance.options.estimateSize()).toBe(72)
+  })
+
   it('keys the virtualizer size cache by row identity, not index (avoids stale heights on sort/filter)', async () => {
     const data = Array.from({ length: 12 }, (_, i) => ({ id: 100 + i, name: `Row ${i + 1}` }))
     const wrapper = mount(DataTable, {

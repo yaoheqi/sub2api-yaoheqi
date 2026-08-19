@@ -209,7 +209,7 @@
           :sort-storage-key="ACCOUNT_SORT_STORAGE_KEY"
           :estimate-row-height="72"
           :overscan="5"
-          :virtualize-threshold="50"
+          :virtualize-threshold="100"
         >
           <template #header-select>
             <input

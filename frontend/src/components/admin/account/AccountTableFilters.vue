@@ -45,10 +45,10 @@ const gOpts = computed(() => [
 <style scoped>
 .account-table-filters :deep(.input),
 .account-table-filters :deep(.select-trigger) {
-  min-height: 2.25rem;
-  height: 2.25rem;
-  padding-top: 0.375rem;
-  padding-bottom: 0.375rem;
+  min-height: 2rem;
+  height: 2rem;
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
   font-size: 0.875rem;
 }
 </style>

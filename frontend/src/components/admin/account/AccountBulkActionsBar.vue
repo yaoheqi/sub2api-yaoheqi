@@ -1,5 +1,5 @@
 <template>
-  <div class="mb-2 flex min-h-10 items-center justify-between rounded-md bg-primary-50 px-3 py-1.5 dark:bg-primary-900/20">
+  <div class="mb-1 flex min-h-8 items-center justify-between rounded-md bg-primary-50 px-3 py-1 dark:bg-primary-900/20">
     <div class="flex flex-wrap items-center gap-2">
       <span v-if="allResultsSelected" class="text-sm font-medium text-primary-900 dark:text-primary-100">
         {{ t('admin.accounts.bulkActions.selectedAll', { count: selectedIds.length }) }}

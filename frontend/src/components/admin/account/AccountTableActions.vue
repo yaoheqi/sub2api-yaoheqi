@@ -1,12 +1,12 @@
 <template>
   <div class="account-table-actions flex flex-shrink-0 flex-nowrap items-center gap-1.5">
     <slot name="before"></slot>
-    <button @click="$emit('refresh')" :disabled="loading" class="btn btn-secondary h-9 w-9 justify-center px-0" :title="t('common.refresh')">
+    <button @click="$emit('refresh')" :disabled="loading" class="btn btn-secondary h-8 w-8 justify-center px-0" :title="t('common.refresh')">
       <Icon name="refresh" size="sm" :class="[loading ? 'animate-spin' : '']" />
     </button>
     <slot name="after"></slot>
     <slot name="beforeCreate"></slot>
-    <button @click="$emit('create')" class="btn btn-primary h-9 whitespace-nowrap px-3 text-sm">{{ t('admin.accounts.createAccount') }}</button>
+    <button @click="$emit('create')" class="btn btn-primary h-8 whitespace-nowrap px-3 text-sm">{{ t('admin.accounts.createAccount') }}</button>
     <slot name="afterCreate"></slot>
   </div>
 </template>
@@ -23,8 +23,8 @@ const { t } = useI18n()
 
 <style scoped>
 .account-table-actions :deep(.btn) {
-  min-height: 2.25rem;
-  padding-top: 0.375rem;
-  padding-bottom: 0.375rem;
+  min-height: 2rem;
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
 }
 </style>

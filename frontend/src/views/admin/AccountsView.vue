@@ -1,6 +1,6 @@
 <template>
   <AppLayout>
-    <TablePageLayout compact>
+    <TablePageLayout compact class="account-page-compact">
       <template #filters>
         <div class="flex min-w-0 flex-nowrap items-center gap-2 overflow-x-auto">
           <AccountTableFilters
@@ -22,7 +22,7 @@
                 <button
                   ref="autoRefreshTriggerRef"
                   @click="toggleAutoRefreshDropdown"
-                  class="btn btn-secondary h-9 w-9 justify-center px-0"
+                  class="btn btn-secondary h-8 w-8 justify-center px-0"
                   :title="t('admin.accounts.autoRefresh')"
                   :aria-label="t('admin.accounts.autoRefresh')"
                   :aria-expanded="showAutoRefreshDropdown"
@@ -67,7 +67,7 @@
                 <button
                   ref="accountToolsTriggerRef"
                   @click="toggleAccountToolsDropdown"
-                  class="btn btn-secondary h-9 w-9 justify-center px-0"
+                  class="btn btn-secondary h-8 w-8 justify-center px-0"
                   :title="t('admin.accounts.moreActions')"
                   :aria-label="t('admin.accounts.moreActions')"
                   :aria-expanded="showAccountToolsDropdown"
@@ -190,7 +190,12 @@
           @select-all-results="handleSelectAllResults"
           @toggle-schedulable="handleBulkToggleSchedulable"
         />
-        <div ref="accountTableRef" class="account-table-compact flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div
+          ref="accountTableRef"
+          class="account-table-compact flex min-h-0 flex-1 flex-col overflow-hidden"
+          :class="{ 'account-table-fixed-rows': !loading && accounts.length > 0 && accounts.length <= 50 }"
+          :style="{ '--account-table-content-height': `${32 + accounts.length * 72}px` }"
+        >
         <DataTable
           ref="dataTableRef"
           :columns="cols"
@@ -202,7 +207,7 @@
           default-sort-key="name"
           default-sort-order="asc"
           :sort-storage-key="ACCOUNT_SORT_STORAGE_KEY"
-          :estimate-row-height="56"
+          :estimate-row-height="72"
           :overscan="5"
           :virtualize-threshold="50"
         >
@@ -222,7 +227,7 @@
             <span class="font-mono text-xs text-gray-500 dark:text-gray-400">#{{ value }}</span>
           </template>
           <template #cell-name="{ row, value }">
-            <div class="flex w-full min-w-0 max-w-[240px] flex-col">
+            <div class="flex w-full min-w-0 max-w-[240px] flex-col leading-tight">
               <HelpTooltip
                 v-if="accountHomepageUrl(row)"
                 :content="accountHomepageUrl(row)"
@@ -234,16 +239,16 @@
                     :href="accountHomepageUrl(row)"
                     target="_blank"
                     rel="noopener noreferrer"
-                    class="block max-w-full whitespace-normal break-words border-b border-dotted border-gray-300 font-medium leading-5 text-gray-900 dark:border-dark-600 dark:text-white"
+                    class="block max-w-full truncate border-b border-dotted border-gray-300 font-medium leading-4 text-gray-900 dark:border-dark-600 dark:text-white"
                   >
                     {{ value }}
                   </a>
                 </template>
               </HelpTooltip>
-              <span v-else class="block max-w-full whitespace-normal break-words font-medium leading-5 text-gray-900 dark:text-white" :title="value">{{ value }}</span>
+              <span v-else class="block max-w-full truncate font-medium leading-4 text-gray-900 dark:text-white" :title="value">{{ value }}</span>
               <span
                 v-if="accountDisplayEmail(row)"
-                class="max-w-full whitespace-normal break-all text-xs leading-4 text-gray-500 dark:text-gray-400"
+                class="max-w-full truncate text-xs leading-4 text-gray-500 dark:text-gray-400"
                 :title="accountDisplayEmail(row) + (row.parent_chatgpt_account_id ? ' · ' + row.parent_chatgpt_account_id : '')"
               >
                 {{ accountDisplayEmail(row) }}
@@ -313,6 +318,7 @@
           </template>
           <template #cell-usage="{ row }">
             <AccountUsageCell
+              compact
               :account="row"
               :today-stats="todayStatsByAccountId[String(row.id)] ?? null"
               :today-stats-loading="todayStatsLoading"
@@ -2610,17 +2616,47 @@ onUnmounted(() => {
 }
 
 .account-table-compact :deep(.table-header th) {
-  padding-top: 0.5rem !important;
-  padding-bottom: 0.5rem !important;
+  padding-top: 0.375rem !important;
+  padding-bottom: 0.375rem !important;
 }
 
 .account-table-compact :deep(.table-body td) {
-  padding-top: 0.375rem !important;
-  padding-bottom: 0.375rem !important;
+  height: 4.5rem !important;
+  padding-top: 0.25rem !important;
+  padding-bottom: 0.25rem !important;
+  overflow: hidden;
+  vertical-align: middle;
   line-height: 1rem;
 }
 
 .account-table-compact :deep(.table-body tr) {
-  height: 3.5rem;
+  height: 4.5rem !important;
+}
+
+.account-table-fixed-rows :deep(table) {
+  height: var(--account-table-content-height) !important;
+  min-height: var(--account-table-content-height) !important;
+  max-height: var(--account-table-content-height) !important;
+}
+
+@media (min-width: 1024px) {
+  .account-page-compact {
+    gap: 0.5rem;
+  }
+
+  .account-page-compact :deep(.layout-section-fixed:last-child > div) {
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+  }
+
+  .account-page-compact :deep(.page-size-select .select-trigger) {
+    min-height: 2rem;
+    height: 2rem;
+  }
+
+  .account-page-compact :deep(nav button) {
+    padding-top: 0.375rem;
+    padding-bottom: 0.375rem;
+  }
 }
 </style>

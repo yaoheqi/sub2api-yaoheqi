@@ -118,6 +118,64 @@
 
     <!-- OpenAI OAuth accounts: single source from /usage API -->
     <template v-else-if="account.platform === 'openai' && account.type === 'oauth'">
+      <template v-if="compact">
+        <div v-if="hasOpenAIUsageFallback" class="min-w-[22rem] space-y-1" data-testid="openai-usage-compact">
+          <div class="flex h-5 items-center gap-1.5 overflow-hidden">
+            <CodexOverdraftStatus :state="usageInfo?.codex_quota_overdraft" />
+            <div v-if="openAICompactStats" class="flex min-w-0 items-center gap-1 text-[9px] text-gray-500 dark:text-gray-400">
+              <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">{{ openAICompactStats.requests }} req</span>
+              <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">{{ openAICompactStats.tokens }}</span>
+              <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">A ${{ openAICompactStats.accountCost }}</span>
+              <span v-if="openAICompactStats.userCost" class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">U ${{ openAICompactStats.userCost }}</span>
+            </div>
+            <button
+              type="button"
+              class="ml-auto inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-blue-600 hover:bg-blue-50 disabled:opacity-50 dark:text-blue-400 dark:hover:bg-blue-900/30"
+              :disabled="activeQueryLoading"
+              :title="t('admin.accounts.usageWindow.activeQuery')"
+              @click="loadActiveUsage"
+            >
+              <svg class="h-3 w-3" :class="{ 'animate-spin': activeQueryLoading }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+            </button>
+          </div>
+          <div class="flex h-5 items-center gap-3 overflow-hidden">
+            <UsageProgressBar
+              v-if="usageInfo?.five_hour"
+              compact
+              label="5h"
+              :utilization="usageInfo.five_hour.utilization"
+              :resets-at="usageInfo.five_hour.resets_at"
+              :show-now-when-idle="true"
+              color="indigo"
+            />
+            <UsageProgressBar
+              v-if="usageInfo?.seven_day"
+              compact
+              label="7d"
+              :utilization="usageInfo.seven_day.utilization"
+              :resets-at="usageInfo.seven_day.resets_at"
+              :show-now-when-idle="true"
+              color="emerald"
+            />
+          </div>
+        </div>
+        <div v-else-if="loading" class="flex h-10 items-center gap-2">
+          <div class="h-4 w-20 animate-pulse rounded bg-gray-200 dark:bg-gray-700" />
+          <div class="h-4 w-20 animate-pulse rounded bg-gray-200 dark:bg-gray-700" />
+        </div>
+        <button
+          v-else
+          type="button"
+          class="inline-flex items-center gap-1 text-[10px] text-blue-600 disabled:opacity-50 dark:text-blue-400"
+          :disabled="activeQueryLoading"
+          @click="loadActiveUsage"
+        >
+          {{ activeQueryLoading ? t('common.loading') : t('admin.accounts.usageWindow.activeQuery') }}
+        </button>
+      </template>
+      <template v-else>
       <div v-if="hasOpenAIUsageFallback" class="space-y-1">
         <CodexOverdraftStatus :state="usageInfo?.codex_quota_overdraft" />
         <UsageProgressBar
@@ -199,6 +257,7 @@
           @account-updated="handleQuotaResetAccountUpdated"
         />
       </div>
+      </template>
     </template>
 
     <!-- Antigravity OAuth accounts: fetch usage from API -->
@@ -679,6 +738,7 @@ const props = withDefaults(
     batchedUsageError?: string | null
     batchedUsageLoading?: boolean
     requestBatchedUsage?: ((account: Account, options?: { force?: boolean }) => void) | null
+    compact?: boolean
   }>(),
   {
     todayStats: null,
@@ -687,7 +747,8 @@ const props = withDefaults(
     batchedUsage: null,
     batchedUsageError: null,
     batchedUsageLoading: false,
-    requestBatchedUsage: null
+    requestBatchedUsage: null,
+    compact: false
   }
 )
 
@@ -786,6 +847,17 @@ const geminiUsageAvailable = computed(() => {
 const hasOpenAIUsageFallback = computed(() => {
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return false
   return !!usageInfo.value?.five_hour || !!usageInfo.value?.seven_day || !!usageInfo.value?.codex_quota_overdraft
+})
+
+const openAICompactStats = computed(() => {
+  const stats = usageInfo.value?.five_hour?.window_stats ?? usageInfo.value?.seven_day?.window_stats
+  if (!stats || (stats.requests <= 0 && stats.tokens <= 0)) return null
+  return {
+    requests: formatCompactNumber(stats.requests, { allowBillions: false }),
+    tokens: formatCompactNumber(stats.tokens),
+    accountCost: stats.cost.toFixed(2),
+    userCost: stats.user_cost == null ? null : stats.user_cost.toFixed(2)
+  }
 })
 
 const openAIUsageRefreshKey = computed(() => buildOpenAIUsageRefreshKey(props.account))

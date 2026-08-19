@@ -85,7 +85,7 @@ func TestUpdateServicePerformUpdateNoUpdateReturnsSentinel(t *testing.T) {
 	require.ErrorIs(t, err, ErrNoUpdateAvailable)
 }
 
-func TestUpdateServiceSourceBuildTracksForkVersionFile(t *testing.T) {
+func TestUpdateServiceSourceBuildIgnoresFlavorRevisionAtSameRelease(t *testing.T) {
 	client := &updateServiceGitHubClientStub{repositoryFile: []byte("0.1.176-overdraft.2\n")}
 	svc := NewUpdateService(
 		&updateServiceCacheStub{},
@@ -99,13 +99,33 @@ func TestUpdateServiceSourceBuildTracksForkVersionFile(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "0.1.176-overdraft.1", info.CurrentVersion)
 	require.Equal(t, "0.1.176-overdraft.2", info.LatestVersion)
-	require.True(t, info.HasUpdate)
+	require.False(t, info.HasUpdate)
 	require.Equal(t, "source", info.BuildType)
 	require.Equal(t, githubSourceUpdateURL, info.ReleaseInfo.HTMLURL)
 	require.Equal(t, githubRepo, client.fileRepo)
 	require.Equal(t, githubSourceBranch, client.fileRef)
 	require.Equal(t, githubForkVersionFile, client.filePath)
 	require.Empty(t, client.latestRepo, "源码构建不能查询官方或 Fork 的二进制 Release")
+}
+
+func TestUpdateServiceSourceBuildOnlyPromptsForNewRelease(t *testing.T) {
+	tests := []struct {
+		name    string
+		current string
+		latest  string
+		want    bool
+	}{
+		{name: "same release custom versus overdraft", current: "v0.1.178-custom", latest: "0.1.178-overdraft.9", want: false},
+		{name: "same release branded build", current: "v0.1.178-LeoYan-overdraft.2", latest: "0.1.178-overdraft.1", want: false},
+		{name: "new patch release", current: "v0.1.178-custom", latest: "0.1.179-overdraft.1", want: true},
+		{name: "older remote release", current: "v0.1.179-custom", latest: "0.1.178-overdraft.9", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := NewUpdateService(&updateServiceCacheStub{}, &updateServiceGitHubClientStub{}, tt.current, "source")
+			require.Equal(t, tt.want, svc.hasUpdate(tt.latest))
+		})
+	}
 }
 
 func TestUpdateServiceSourceBuildIgnoresLegacyOfficialCache(t *testing.T) {

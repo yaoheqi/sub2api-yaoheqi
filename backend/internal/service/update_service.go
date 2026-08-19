@@ -440,7 +440,7 @@ func (s *UpdateService) fetchLatestRelease(ctx context.Context) (*UpdateInfo, er
 	return &UpdateInfo{
 		CurrentVersion: s.currentVersion,
 		LatestVersion:  latestVersion,
-		HasUpdate:      compareVersions(s.currentVersion, latestVersion) < 0,
+		HasUpdate:      s.hasUpdate(latestVersion),
 		ReleaseInfo: &ReleaseInfo{
 			Name:        release.Name,
 			Body:        release.Body,
@@ -466,7 +466,7 @@ func (s *UpdateService) fetchLatestSourceVersion(ctx context.Context) (*UpdateIn
 	return &UpdateInfo{
 		CurrentVersion: s.currentVersion,
 		LatestVersion:  latestVersion,
-		HasUpdate:      compareVersions(s.currentVersion, latestVersion) < 0,
+		HasUpdate:      s.hasUpdate(latestVersion),
 		ReleaseInfo: &ReleaseInfo{
 			Name:    "sub2api-overdraft " + latestVersion,
 			HTMLURL: githubSourceUpdateURL,
@@ -478,6 +478,23 @@ func (s *UpdateService) fetchLatestSourceVersion(ctx context.Context) (*UpdateIn
 
 func (s *UpdateService) isSourceBuild() bool {
 	return strings.EqualFold(strings.TrimSpace(s.buildType), "source")
+}
+
+// hasUpdate keeps custom source builds on the repository's upstream release
+// cadence. Flavor/revision suffixes (custom, overdraft, LeoYan) identify a
+// local build and must not advertise each other as upgrades.
+func (s *UpdateService) hasUpdate(latestVersion string) bool {
+	if !s.isSourceBuild() {
+		return compareVersions(s.currentVersion, latestVersion) < 0
+	}
+	current := parseVersion(s.currentVersion)
+	latest := parseVersion(latestVersion)
+	for i := 0; i < len(current); i++ {
+		if current[i] != latest[i] {
+			return current[i] < latest[i]
+		}
+	}
+	return false
 }
 
 func (s *UpdateService) downloadFile(ctx context.Context, downloadURL, dest string) error {
@@ -668,7 +685,7 @@ func (s *UpdateService) getFromCache(ctx context.Context) (*UpdateInfo, error) {
 	return &UpdateInfo{
 		CurrentVersion: s.currentVersion,
 		LatestVersion:  cached.Latest,
-		HasUpdate:      compareVersions(s.currentVersion, cached.Latest) < 0,
+		HasUpdate:      s.hasUpdate(cached.Latest),
 		ReleaseInfo:    cached.ReleaseInfo,
 		Cached:         true,
 		BuildType:      s.buildType,

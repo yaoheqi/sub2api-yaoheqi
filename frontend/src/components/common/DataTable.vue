@@ -464,6 +464,8 @@ interface Props {
   fixedRowHeight?: number
   /** Number of rows to render beyond the visible area (default 5) */
   overscan?: number
+  /** Disable windowing when row content has intentionally variable height. */
+  virtualize?: boolean
   /**
    * Only virtualize when the row count exceeds this threshold (default 100).
    * Smaller lists render in full, avoiding the scroll-compensation jank caused by
@@ -486,7 +488,8 @@ const props = withDefaults(defineProps<Props>(), {
   defaultSortOrder: 'asc',
   serverSideSort: false,
   selectable: false,
-  selectedKeys: () => []
+  selectedKeys: () => [],
+  virtualize: true
 })
 
 const sortKey = ref<string>('')
@@ -759,7 +762,9 @@ const toggleAllVisible = (checked: boolean) => {
 // 是否启用虚拟化:仅桌面端且行数超过阈值时开启。小列表全量渲染,彻底绕开虚拟器的
 // 估算/测量/滚动补偿链路,消除可变行高导致的滚动抖动。
 const shouldVirtualize = computed(() =>
-  isDesktopViewport.value && (sortedData.value?.length ?? 0) > (props.virtualizeThreshold ?? 100)
+  props.virtualize !== false
+  && isDesktopViewport.value
+  && (sortedData.value?.length ?? 0) > (props.virtualizeThreshold ?? 100)
 )
 
 const rowVirtualizer = useVirtualizer(computed(() => ({

@@ -122,6 +122,22 @@ describe('DataTable', () => {
     expect(instance.options.count).toBe(data.length)
   })
 
+  it('supports disabling virtualization for variable-height table rows', async () => {
+    const data = Array.from({ length: 120 }, (_, i) => ({ id: i + 1, name: `Row ${i + 1}` }))
+    const wrapper = mount(DataTable, {
+      props: {
+        columns: [{ key: 'name', label: 'Name' }],
+        data,
+        virtualize: false
+      }
+    })
+
+    await wrapper.vm.$nextTick()
+
+    expect((wrapper.vm as any).shouldVirtualize).toBe(false)
+    expect(wrapper.findAll('tbody tr[data-index]')).toHaveLength(data.length)
+  })
+
   it('uses a fixed virtual row height without measuring rendered rows', async () => {
     const data = Array.from({ length: 12 }, (_, i) => ({ id: i + 1, name: `Row ${i + 1}` }))
     const wrapper = mount(DataTable, {

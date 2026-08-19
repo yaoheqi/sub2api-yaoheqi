@@ -206,9 +206,8 @@
           default-sort-order="asc"
           :sort-storage-key="ACCOUNT_SORT_STORAGE_KEY"
           :estimate-row-height="72"
-          :fixed-row-height="72"
           :overscan="5"
-          :virtualize-threshold="50"
+          :virtualize="false"
         >
           <template #header-select>
             <input
@@ -2620,16 +2619,11 @@ onUnmounted(() => {
 }
 
 .account-table-compact :deep(.table-body td) {
-  height: 4.5rem !important;
   padding-top: 0.25rem !important;
   padding-bottom: 0.25rem !important;
   overflow: visible;
   vertical-align: middle;
   line-height: 1rem;
-}
-
-.account-table-compact :deep(.table-body tr) {
-  height: 4.5rem !important;
 }
 
 @media (min-width: 1024px) {

@@ -120,7 +120,7 @@
     <template v-else-if="account.platform === 'openai' && account.type === 'oauth'">
       <template v-if="compact">
         <div v-if="hasOpenAIUsageFallback" class="min-w-[22rem] space-y-1" data-testid="openai-usage-compact">
-          <div class="flex h-5 items-center gap-1.5 overflow-hidden">
+          <div class="flex min-h-5 items-center gap-1.5">
             <CodexOverdraftStatus :state="usageInfo?.codex_quota_overdraft" />
             <div v-if="openAICompactStats" class="flex min-w-0 items-center gap-1 text-[9px] text-gray-500 dark:text-gray-400">
               <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">{{ openAICompactStats.requests }} req</span>
@@ -130,17 +130,16 @@
             </div>
             <button
               type="button"
-              class="ml-auto inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-blue-600 hover:bg-blue-50 disabled:opacity-50 dark:text-blue-400 dark:hover:bg-blue-900/30"
-              :disabled="activeQueryLoading"
-              :title="t('admin.accounts.usageWindow.activeQuery')"
-              @click="loadActiveUsage"
+              class="hidden"
+              aria-hidden="true"
+              tabindex="-1"
             >
               <svg class="h-3 w-3" :class="{ 'animate-spin': activeQueryLoading }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
               </svg>
             </button>
           </div>
-          <div class="flex h-5 items-center gap-3 overflow-hidden">
+          <div class="flex min-h-5 items-center gap-3">
             <UsageProgressBar
               v-if="usageInfo?.five_hour"
               compact
@@ -160,6 +159,19 @@
               color="emerald"
             />
           </div>
+          <OpenAIQuotaResetCell :account="account" class="mt-1" @account-updated="handleQuotaResetAccountUpdated">
+            <template #pre-actions>
+              <button
+                type="button"
+                class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-blue-400 dark:hover:bg-blue-900/30"
+                :disabled="activeQueryLoading"
+                :title="t('admin.accounts.usageWindow.activeQuery')"
+                @click="loadActiveUsage"
+              >
+                {{ t('admin.accounts.usageWindow.activeQuery') }}
+              </button>
+            </template>
+          </OpenAIQuotaResetCell>
         </div>
         <div v-else-if="loading" class="flex h-10 items-center gap-2">
           <div class="h-4 w-20 animate-pulse rounded bg-gray-200 dark:bg-gray-700" />

@@ -193,8 +193,6 @@
         <div
           ref="accountTableRef"
           class="account-table-compact flex min-h-0 flex-1 flex-col overflow-hidden"
-          :class="{ 'account-table-fixed-rows': !loading && accounts.length > 0 && accounts.length <= 50 }"
-          :style="{ '--account-table-content-height': `${32 + accounts.length * 72}px` }"
         >
         <DataTable
           ref="dataTableRef"
@@ -2625,19 +2623,13 @@ onUnmounted(() => {
   height: 4.5rem !important;
   padding-top: 0.25rem !important;
   padding-bottom: 0.25rem !important;
-  overflow: hidden;
+  overflow: visible;
   vertical-align: middle;
   line-height: 1rem;
 }
 
 .account-table-compact :deep(.table-body tr) {
   height: 4.5rem !important;
-}
-
-.account-table-fixed-rows :deep(table) {
-  height: var(--account-table-content-height) !important;
-  min-height: var(--account-table-content-height) !important;
-  max-height: var(--account-table-content-height) !important;
 }
 
 @media (min-width: 1024px) {

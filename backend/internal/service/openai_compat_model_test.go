@@ -158,7 +158,6 @@ func TestForwardAsAnthropic_UsesExactFableMessagesDispatchModel(t *testing.T) {
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -208,7 +207,6 @@ func TestForwardAsAnthropic_NormalizesRoutingAndEffortForGpt54XHigh(t *testing.T
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -338,7 +336,6 @@ func rawGPT56ResponsesOAuthAccount(requestedModel, mappedModel string) *Account 
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -632,7 +629,6 @@ func TestForwardAsAnthropic_OAuthCompatKeepsFullReplayForCacheGrowth(t *testing.
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -947,7 +943,6 @@ func TestForwardAsAnthropic_DoesNotAttachPreviousResponseIDForOAuthCompat(t *tes
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -987,7 +982,6 @@ func TestForwardAsAnthropic_ReusesOAuthCodexTurnState(t *testing.T) {
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -1060,7 +1054,6 @@ func TestForwardAsAnthropic_OAuthRestoresCodexIdentityHeaders(t *testing.T) {
 				Platform:    PlatformOpenAI,
 				Type:        AccountTypeOAuth,
 				Concurrency: 1,
-				Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 				Credentials: map[string]any{
 					"access_token":       "oauth-token",
 					"chatgpt_account_id": "chatgpt-acc",
@@ -1095,7 +1088,6 @@ func TestForwardAsAnthropic_OAuthDigestFallbackReusesTurnStateWithoutExplicitKey
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -1154,7 +1146,6 @@ func TestForwardAsAnthropic_OAuthMetadataSessionSurvivesDigestPrefixRewrite(t *t
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -1212,7 +1203,6 @@ func TestForwardAsAnthropic_OAuthMetadataSessionSurvivesChangingCacheControlAnch
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -1265,7 +1255,6 @@ func TestForwardAsAnthropic_OAuthKeepsSystemAsDeveloperInput(t *testing.T) {
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -1305,7 +1294,6 @@ func TestForwardAsAnthropic_OAuthAddsClaudeCodeTodoGuardForCompatModel(t *testin
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -1343,7 +1331,6 @@ func TestForwardAsAnthropic_OAuthPreservesClaudeCodeToolCallID(t *testing.T) {
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -1488,7 +1475,6 @@ func TestForwardAsAnthropic_ForcedCodexInstructionsTemplatePrependsRenderedInstr
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -1536,7 +1522,6 @@ func TestForwardAsAnthropic_ForcedCodexInstructionsTemplateUsesCachedTemplateCon
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -1582,7 +1567,6 @@ func TestForwardAsAnthropic_ClientDisconnectDrainsUpstreamUsage(t *testing.T) {
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -1625,7 +1609,6 @@ func TestForwardAsAnthropic_TerminalUsageWithoutUpstreamCloseReturns(t *testing.
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -1687,7 +1670,6 @@ func TestForwardAsAnthropic_EventNamedTerminalWithoutUpstreamCloseReturns(t *tes
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -1756,7 +1738,6 @@ func TestForwardAsAnthropic_EventNamedTerminalWithKeepaliveReturns(t *testing.T)
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -1812,7 +1793,6 @@ func TestForwardAsAnthropic_BufferedTerminalWithoutUpstreamCloseReturns(t *testi
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -1911,7 +1891,6 @@ func TestForwardAsAnthropic_BufferedEventNamedTerminalWithoutUpstreamCloseReturn
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -1964,7 +1943,6 @@ func TestForwardAsAnthropic_MissingTerminalBeforeOutputReturnsFailoverAndOps(t *
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -2020,7 +1998,6 @@ func TestForwardAsAnthropic_MissingTerminalAfterOutputRecordsOpsWithoutFailover(
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -2074,7 +2051,6 @@ func TestForwardAsAnthropic_MissingTerminalAfterClientDisconnectSkipsOpsAndFailo
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -2125,7 +2101,6 @@ func TestForwardAsAnthropic_CompleteStreamDoesNotRecordMissingTerminalOps(t *tes
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -2181,7 +2156,6 @@ func TestForwardAsAnthropic_UpstreamRequestIgnoresClientCancel(t *testing.T) {
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",

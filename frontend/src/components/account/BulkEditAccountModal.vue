@@ -602,7 +602,7 @@
         </div>
       </div>
 
-      <!-- Header Override (anthropic/openai apikey only) -->
+      <!-- Header Override (eligible API-key platforms + grok OAuth) -->
       <div v-if="allHeaderOverrideCapable" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="flex items-center justify-between">
           <div class="flex-1 pr-4">
@@ -979,7 +979,6 @@
           <label class="input-label mb-0">{{ t('admin.accounts.openai.codexFingerprintMode') }}</label>
           <input
             v-model="enableCodexFingerprintMode"
-            id="bulk-edit-codex-fingerprint-mode-enabled"
             type="checkbox"
             class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
           />
@@ -1600,7 +1599,7 @@ const allBillingProbeCapable = computed(() => {
   )
 })
 
-// 是否全部为 anthropic/openai 平台的 apikey 账号（请求头覆写仅在此条件下显示）
+// 是否全部为支持请求头覆写的平台/账号类型
 // 所选平台 × 所选类型的全组合均需具备覆写资格（实际选中账号是该组合的子集，
 // 按交叉积判定偏保守但绝不放行不合资格的账号）
 const allHeaderOverrideCapable = computed(() => {
@@ -1708,7 +1707,7 @@ const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAppServerEnabled = ref(false)
 type CodexFingerprintMode = 'off' | 'device' | 'session' | 'full'
 const enableCodexFingerprintMode = ref(false)
-const codexFingerprintMode = ref<CodexFingerprintMode>('session')
+const codexFingerprintMode = ref<CodexFingerprintMode>('off')
 const codexFingerprintModeOptions = computed(() => [
   { value: 'off' as CodexFingerprintMode, label: t('admin.accounts.openai.codexFingerprintOff') },
   { value: 'device' as CodexFingerprintMode, label: t('admin.accounts.openai.codexFingerprintDevice') },
@@ -2090,8 +2089,12 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
 
   if (enableCodexFingerprintMode.value) {
     const extra = ensureExtra()
-    // 始终落键，确保批量选择 off 不会被缺省 session 覆盖。
-    extra.codex_fingerprint_mode = codexFingerprintMode.value
+    // off = 默认值，清键即可；device/session/full 是显式 opt-in，必须落键（#5610）。
+    if (codexFingerprintMode.value !== 'off') {
+      extra.codex_fingerprint_mode = codexFingerprintMode.value
+    } else {
+      delete extra.codex_fingerprint_mode
+    }
   }
 
   if (enableOpenAICompactMode.value) {
@@ -2359,7 +2362,7 @@ watch(
       enableCodexCLIOnly.value = false
       enableCodexCLIOnlyAppServer.value = false
       enableCodexFingerprintMode.value = false
-      codexFingerprintMode.value = 'session'
+      codexFingerprintMode.value = 'off'
       enableOpenAICompactMode.value = false
       enableOpenAICompactModelMapping.value = false
       enableRpmLimit.value = false

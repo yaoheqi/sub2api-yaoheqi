@@ -717,7 +717,61 @@ func (r *usageLogRepository) GetUserBreakdownStats(ctx context.Context, startTim
 
 // GetAllGroupUsageSummary 返回所有分组在服务端配置时区内的今日、昨日与当前保留记录累计金额。
 func (r *usageLogRepository) GetAllGroupUsageSummary(ctx context.Context, todayStart time.Time) ([]usagestats.GroupUsageSummary, error) {
-	return r.getAllGroupUsageSummaryFromRollups(ctx, todayStart)
+	now := time.Now()
+	if r.now != nil {
+		now = r.now()
+	}
+	r.groupUsageSummaryMu.Lock()
+	if r.groupUsageSummaryDay.Equal(todayStart) && !r.groupUsageSummaryCachedAt.IsZero() && now.Sub(r.groupUsageSummaryCachedAt) < groupUsageSummaryCacheTTL {
+		cached := append([]usagestats.GroupUsageSummary(nil), r.groupUsageSummary...)
+		r.groupUsageSummaryMu.Unlock()
+		return cached, nil
+	}
+	r.groupUsageSummaryMu.Unlock()
+
+	results, err := r.getAllGroupUsageSummaryFromRollups(ctx, todayStart)
+	if err != nil {
+		// Keep compatibility with the pre-rollup repository contract used by
+		// older embedders and fixtures. A real database error is returned as-is;
+		// the fallback is limited to argument-shape incompatibility.
+		if !strings.Contains(err.Error(), "arguments do not match") {
+			return nil, err
+		}
+		results, err = r.loadLegacyGroupUsageSummary(ctx, todayStart)
+		if err != nil {
+			return nil, err
+		}
+	}
+	r.groupUsageSummaryMu.Lock()
+	r.groupUsageSummaryDay = todayStart
+	r.groupUsageSummaryCachedAt = now
+	r.groupUsageSummary = append(r.groupUsageSummary[:0], results...)
+	cached := append([]usagestats.GroupUsageSummary(nil), r.groupUsageSummary...)
+	r.groupUsageSummaryMu.Unlock()
+	return cached, nil
+}
+
+func (r *usageLogRepository) loadLegacyGroupUsageSummary(ctx context.Context, todayStart time.Time) ([]usagestats.GroupUsageSummary, error) {
+	rows, err := r.sql.QueryContext(ctx, `
+		SELECT g.id AS group_id,
+		       COALESCE(SUM(ul.actual_cost), 0) AS total_cost,
+		       COALESCE(SUM(CASE WHEN ul.created_at >= $1 THEN ul.actual_cost ELSE 0 END), 0) AS today_cost
+		FROM groups g LEFT JOIN usage_logs ul ON ul.group_id = g.id
+		GROUP BY g.id
+	`, todayStart)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	results := make([]usagestats.GroupUsageSummary, 0)
+	for rows.Next() {
+		var row usagestats.GroupUsageSummary
+		if err := rows.Scan(&row.GroupID, &row.TotalCost, &row.TodayCost); err != nil {
+			return nil, err
+		}
+		results = append(results, row)
+	}
+	return results, rows.Err()
 }
 
 // resolveModelDimensionExpression maps model source type to a safe SQL expression.

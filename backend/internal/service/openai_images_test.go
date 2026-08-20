@@ -461,22 +461,14 @@ func TestOpenAIUpstreamErrorBodyReadLimitForConfig_RespectsDiagnosticLimit(t *te
 	require.Equal(t, int64(cfg.Gateway.LogUpstreamErrorBodyMaxBytes), openAIUpstreamErrorBodyReadLimitForConfig(cfg))
 }
 
-func TestAccountSupportsOpenAIImageCapability_OAuthOptOutSupportsNative(t *testing.T) {
+func TestAccountSupportsOpenAIImageCapability_OAuthSupportsNative(t *testing.T) {
 	account := &Account{
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
-		Extra:    map[string]any{codexFingerprintModeExtraKey: string(codexFingerprintOff)},
 	}
 
 	require.True(t, account.SupportsOpenAIImageCapability(OpenAIImagesCapabilityBasic))
 	require.True(t, account.SupportsOpenAIImageCapability(OpenAIImagesCapabilityNative))
-}
-
-func TestAccountSupportsOpenAIImageCapability_PrivacyOAuthIsExcluded(t *testing.T) {
-	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}
-
-	require.False(t, account.SupportsOpenAIImageCapability(OpenAIImagesCapabilityBasic))
-	require.False(t, account.SupportsOpenAIImageCapability(OpenAIImagesCapabilityNative))
 }
 
 func TestAccountSupportsOpenAIImageCapability_EmptyRequirementDoesNotRejectGrok(t *testing.T) {
@@ -508,8 +500,7 @@ func TestAccountSupportsOpenAIEndpointCapability(t *testing.T) {
 		}
 
 		require.True(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityChatCompletions))
-		require.False(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityCountTokens))
-		require.False(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityAlphaSearch))
+		require.True(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityAlphaSearch))
 		require.False(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityEmbeddings))
 	})
 
@@ -523,7 +514,6 @@ func TestAccountSupportsOpenAIEndpointCapability(t *testing.T) {
 		oauth := &Account{
 			Platform: PlatformOpenAI,
 			Type:     AccountTypeOAuth,
-			Extra:    map[string]any{codexFingerprintModeExtraKey: string(codexFingerprintOff)},
 		}
 		grok := &Account{
 			Platform: PlatformGrok,
@@ -567,7 +557,6 @@ func TestAccountSupportsOpenAIEndpointCapability(t *testing.T) {
 		account := &Account{
 			Platform: PlatformOpenAI,
 			Type:     AccountTypeOAuth,
-			Extra:    map[string]any{codexFingerprintModeExtraKey: string(codexFingerprintOff)},
 			Credentials: map[string]any{
 				"openai_capabilities": []any{"chat_completions"},
 			},
@@ -762,7 +751,6 @@ func TestOpenAIGatewayServiceForwardImages_OAuthPassesNAndReturnsAllImages(t *te
 		Name:     "openai-oauth",
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
-		Extra:    map[string]any{codexFingerprintModeExtraKey: string(codexFingerprintOff)},
 		Credentials: map[string]any{
 			"access_token":       "token-123",
 			"chatgpt_account_id": "acct-123",
@@ -918,7 +906,6 @@ func TestOpenAIGatewayServiceForwardImages_OAuthUpstreamHTTPErrorSurfacesRealErr
 		Name:     "openai-oauth",
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
-		Extra:    map[string]any{codexFingerprintModeExtraKey: string(codexFingerprintOff)},
 		Credentials: map[string]any{
 			"access_token": "token-123",
 		},
@@ -977,7 +964,6 @@ func TestOpenAIGatewayServiceForwardImages_OAuthNonStreamModerationBlockedReturn
 		Name:     "openai-oauth",
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
-		Extra:    map[string]any{codexFingerprintModeExtraKey: string(codexFingerprintOff)},
 		Credentials: map[string]any{
 			"access_token": "token-123",
 		},
@@ -1028,7 +1014,6 @@ func TestOpenAIGatewayServiceForwardImages_OAuthNonStreamServerErrorReturnsFailo
 		Name:     "openai-oauth-server-error",
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
-		Extra:    map[string]any{codexFingerprintModeExtraKey: string(codexFingerprintOff)},
 		Credentials: map[string]any{
 			"access_token": "token-123",
 		},
@@ -1191,7 +1176,6 @@ func TestOpenAIGatewayServiceForwardImages_OAuthStreamServerErrorAfterFlushDoesN
 		Name:     "openai-oauth-partial-server-error",
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
-		Extra:    map[string]any{codexFingerprintModeExtraKey: string(codexFingerprintOff)},
 		Credentials: map[string]any{
 			"access_token": "token-123",
 		},
@@ -1560,7 +1544,6 @@ func TestOpenAIGatewayServiceForwardImages_OAuthStreamingTransformsEvents(t *tes
 		Name:     "openai-oauth",
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
-		Extra:    map[string]any{codexFingerprintModeExtraKey: string(codexFingerprintOff)},
 		Credentials: map[string]any{
 			"access_token": "token-123",
 		},
@@ -1715,7 +1698,6 @@ func TestOpenAIGatewayServiceForwardImages_OAuthEditsMultipartUsesResponsesAPI(t
 		Name:     "openai-oauth",
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
-		Extra:    map[string]any{codexFingerprintModeExtraKey: string(codexFingerprintOff)},
 		Credentials: map[string]any{
 			"access_token": "token-123",
 		},
@@ -1778,7 +1760,6 @@ func TestOpenAIGatewayServiceForwardImages_OAuthEditsStreamingTransformsEvents(t
 		Name:     "openai-oauth",
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
-		Extra:    map[string]any{codexFingerprintModeExtraKey: string(codexFingerprintOff)},
 		Credentials: map[string]any{
 			"access_token": "token-123",
 		},
@@ -1939,7 +1920,6 @@ func TestOpenAIGatewayServiceForwardImages_OAuthStreamingHandlesOutputItemDoneFa
 		Name:     "openai-oauth",
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
-		Extra:    map[string]any{codexFingerprintModeExtraKey: string(codexFingerprintOff)},
 		Credentials: map[string]any{
 			"access_token": "token-123",
 		},
@@ -1996,7 +1976,6 @@ func TestOpenAIGatewayServiceForwardImages_OAuthStreamingHandlesMultilineSSE(t *
 		Name:     "openai-oauth",
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
-		Extra:    map[string]any{codexFingerprintModeExtraKey: string(codexFingerprintOff)},
 		Credentials: map[string]any{
 			"access_token": "token-123",
 		},
@@ -2061,7 +2040,6 @@ func TestOpenAIGatewayServiceForwardImages_OAuthStreamingDrainsAfterClientDiscon
 		Name:     "openai-oauth",
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
-		Extra:    map[string]any{codexFingerprintModeExtraKey: string(codexFingerprintOff)},
 		Credentials: map[string]any{
 			"access_token": "token-123",
 		},

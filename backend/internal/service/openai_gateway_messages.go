@@ -15,7 +15,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -41,15 +40,13 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	// thinking / tool_use / cache 语义，适配 Claude Code 等原生客户端。
 	// 必须先于 ShouldUseResponsesAPI 分流：Anthropic 协议账号经 probe 落标
 	// openai_responses_supported=false，会先命中下方的 CC 直转分支。
-	if account.IsAnthropicProtocol() {
+	if account.IsAnthropicProtocol() || account.IsAdaptiveAPIProtocol() {
 		return s.forwardAnthropicViaNativeAnthropicEndpoint(ctx, c, account, body, defaultMappedModel)
 	}
 
-	// 入口分流：APIKey 账号 + 上游不支持 Responses API → 走 CC 直转（与
-	// ForwardAsChatCompletions 对称）。缺少此分流时，/v1/messages 入站请求
-	// 会被无条件转为 Responses 格式发往上游 /v1/responses，导致只支持
-	// /v1/chat/completions 的第三方 OpenAI 兼容上游全部 400。
-	if account.Type == AccountTypeAPIKey && !openai_compat.ShouldUseResponsesAPI(account.Extra) {
+	// 固定 chat_completions 的 CN 账号，以及不支持 Responses 的其他 APIKey
+	// 账号，均将 Messages 转为 CC；固定 responses 的 CN 账号不受探针旧值覆盖。
+	if shouldForwardOpenAIResponsesViaRawChatCompletions(account) {
 		return s.forwardAnthropicViaRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 	}
 
@@ -325,7 +322,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 
 	// Override session_id with a deterministic UUID derived from the isolated
 	// session key, ensuring different API keys produce different upstream sessions.
-	if account.Platform != PlatformGrok && promptCacheKey != "" && !codexPrivacyEnabled(account) {
+	if account.Platform != PlatformGrok && promptCacheKey != "" {
 		isolatedSessionID := generateSessionUUID(isolateOpenAISessionID(apiKeyID, promptCacheKey))
 		upstreamReq.Header.Set("session_id", isolatedSessionID)
 		if upstreamReq.Header.Get("conversation_id") != "" {
@@ -349,13 +346,6 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 	if compatTurnState != "" && upstreamReq.Header.Get("x-codex-turn-state") == "" {
 		upstreamReq.Header.Set("x-codex-turn-state", compatTurnState)
-	}
-	// Messages compatibility restores identity/turn headers after the shared
-	// builder. Run the same final privacy invariant again so compat state cannot
-	// become an opaque metadata bypass.
-	if codexPrivacyEnabled(account) {
-		privacyIDs := ensureStagedCodexFingerprintIDs(c, account, s.codexFingerprintSecret())
-		sanitizeCodexPrivacyHeaders(upstreamReq.Header, account, privacyIDs, responsesBody, s.codexFingerprintSecret())
 	}
 
 	// 7. Send request
@@ -560,6 +550,10 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 
 	finalResponse, usage, acc, err := s.readOpenAICompatBufferedTerminal(resp, "openai messages buffered", requestID)
 	if err != nil {
+		var readErr *openAICompatBufferedReadError
+		if errors.As(err, &readErr) && readErr != nil {
+			return nil, readErr.cause
+		}
 		return nil, err
 	}
 
@@ -576,11 +570,10 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 	if strings.TrimSpace(finalResponse.Status) == "failed" {
 		payload, _ := json.Marshal(gin.H{"type": "response.failed", "response": finalResponse})
 		if hit, code, msg := detectOpenAICyberPolicy(payload); hit {
-			safeMsg := codexPrivacyUpstreamMessage(account, http.StatusOK, msg)
 			MarkOpsCyberPolicy(c, CyberPolicyMark{
 				Code:           code,
-				Message:        safeMsg,
-				Body:           codexPrivacyBodyMarker(account, payload, 4096),
+				Message:        msg,
+				Body:           truncateString(string(payload), 4096),
 				UpstreamStatus: http.StatusOK,
 				UpstreamInTok:  usage.InputTokens,
 				UpstreamOutTok: usage.OutputTokens,
@@ -682,6 +675,15 @@ func isOpenAICompatDoneSentinelLine(line string) bool {
 	payload, ok := extractOpenAISSEDataLine(line)
 	return ok && strings.TrimSpace(payload) == "[DONE]"
 }
+
+// openAICompatBufferedReadError 只标记错误发生在上游响应体读取阶段；
+// 具体端点自行决定是否允许重放请求，避免共享读取器扩大重试范围。
+type openAICompatBufferedReadError struct {
+	cause error
+}
+
+func (e *openAICompatBufferedReadError) Error() string { return e.cause.Error() }
+func (e *openAICompatBufferedReadError) Unwrap() error { return e.cause }
 
 func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 	resp *http.Response,
@@ -791,7 +793,7 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 						zap.String("request_id", requestID),
 					)
 				}
-				return nil, usage, acc, ev.err
+				return nil, usage, acc, &openAICompatBufferedReadError{cause: ev.err}
 			}
 
 			if isOpenAICompatDoneSentinelLine(ev.line) {
@@ -952,11 +954,10 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 			if eventType == "response.failed" || isBareErrorEvent {
 				payloadBytes := []byte(payload)
 				if hit, code, msg := detectOpenAICyberPolicy(payloadBytes); hit {
-					safeMsg := codexPrivacyUpstreamMessage(account, http.StatusOK, msg)
 					MarkOpsCyberPolicy(c, CyberPolicyMark{
 						Code:           code,
-						Message:        safeMsg,
-						Body:           codexPrivacyBodyMarker(account, payloadBytes, 4096),
+						Message:        msg,
+						Body:           truncateString(payload, 4096),
 						UpstreamStatus: http.StatusOK,
 						UpstreamInTok:  usage.InputTokens,
 						UpstreamOutTok: usage.OutputTokens,

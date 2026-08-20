@@ -1147,10 +1147,12 @@ func (h *GatewayHandler) compositeAvailableModels(ctx context.Context, groupID *
 	seen := make(map[string]struct{})
 	models := make([]string, 0)
 	schedulablePlatforms := h.gatewayService.GetSchedulablePlatforms(ctx, groupID)
-	for _, platform := range []string{service.PlatformAnthropic, service.PlatformGemini, service.PlatformOpenAI, service.PlatformAntigravity, service.PlatformGrok} {
+	for _, platform := range []string{service.PlatformAnthropic, service.PlatformGemini, service.PlatformOpenAI, service.PlatformAntigravity, service.PlatformGrok, service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek} {
 		platformModels := h.gatewayService.GetAvailableModels(ctx, groupID, platform)
 		if len(platformModels) == 0 {
-			if _, ok := schedulablePlatforms[platform]; ok {
+			// CN 供应商没有静态默认模型列表（defaultModelIDsForPlatform 的
+			// default 分支是 Claude 列表），composite 下只暴露账号映射键。
+			if _, ok := schedulablePlatforms[platform]; ok && !service.IsCNProvider(platform) {
 				platformModels = defaultModelIDsForPlatform(platform)
 			}
 		}
@@ -1372,7 +1374,7 @@ func defaultModelIDsForPlatform(platform string) []string {
 	case service.PlatformComposite:
 		ids := make([]string, 0)
 		seen := make(map[string]struct{})
-		for _, concretePlatform := range []string{service.PlatformAnthropic, service.PlatformGemini, service.PlatformOpenAI, service.PlatformAntigravity, service.PlatformGrok} {
+		for _, concretePlatform := range []string{service.PlatformAnthropic, service.PlatformGemini, service.PlatformOpenAI, service.PlatformAntigravity, service.PlatformGrok, service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek} {
 			for _, id := range defaultModelIDsForPlatform(concretePlatform) {
 				if _, ok := seen[id]; ok {
 					continue
@@ -2393,12 +2395,14 @@ func (h *GatewayHandler) submitUsageRecordTask(parent context.Context, task serv
 	}
 	task = wrapUsageRecordTaskContext(parent, task)
 	if h.usageRecordWorkerPool != nil {
-		if mode := h.usageRecordWorkerPool.Submit(task); !mode.Dropped() {
+		if mode := h.usageRecordWorkerPool.Submit(task); mode != service.UsageRecordSubmitModeDroppedStopped {
 			return
 		}
+		// 池已停止（进程关停窗口）：计费任务不能静默丢失，降级为内联同步执行。
+		// 显式配置的 drop/sample 溢出丢弃仍按配置语义保留。
 		logger.L().With(
-			zap.String("component", "handler.gateway.usage"),
-		).Warn("gateway.usage_record_task_sync_fallback")
+			zap.String("component", "handler.gateway.messages"),
+		).Warn("gateway.usage_record_task_stopped_sync_fallback")
 	}
 	// 回退路径：worker 池未注入或已停止时同步执行，避免退回到无界 goroutine 模式。
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

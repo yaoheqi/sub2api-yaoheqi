@@ -1105,21 +1105,7 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		}
 	}
 
-	if input.GroupIDs != nil {
-		if batchRepo, ok := s.accountRepo.(AccountBatchMutationRepository); ok {
-			if err := batchRepo.BindGroupsBulk(ctx, input.AccountIDs, *input.GroupIDs); err != nil {
-				return nil, err
-			}
-			for _, accountID := range input.AccountIDs {
-				result.Success++
-				result.SuccessIDs = append(result.SuccessIDs, accountID)
-				result.Results = append(result.Results, BulkUpdateAccountResult{AccountID: accountID, Success: true})
-			}
-			return result, nil
-		}
-	}
-
-	// Compatibility path for alternate repositories that do not expose bulk bindings.
+	// Handle group bindings per account (requires individual operations).
 	for _, accountID := range input.AccountIDs {
 		entry := BulkUpdateAccountResult{AccountID: accountID}
 
@@ -1259,50 +1245,10 @@ func (s *adminServiceImpl) ClearAccountError(ctx context.Context, id int64) (*Ac
 	if err := s.accountRepo.ClearTempUnschedulable(ctx, id); err != nil {
 		return nil, err
 	}
-	// Resetting an account must also reset the persisted Codex overdraft
-	// probe; otherwise the UI and scheduler can retain a stale "overdraft"
-	// state after all runtime pauses have been cleared.
-	if err := s.accountRepo.UpdateExtra(ctx, id, map[string]any{CodexQuotaOverdraftProbeExtraKey: nil}); err != nil {
-		return nil, err
-	}
 	if s.runtimeBlocker != nil {
 		s.runtimeBlocker.ClearAccountSchedulingBlock(id)
 	}
 	return s.accountRepo.GetByID(ctx, id)
-}
-
-func (s *adminServiceImpl) BatchClearAccountErrors(ctx context.Context, ids []int64) ([]*Account, error) {
-	if batchRepo, ok := s.accountRepo.(AccountBatchMutationRepository); ok {
-		accounts, err := batchRepo.BulkClearErrors(ctx, ids)
-		if err != nil {
-			return nil, err
-		}
-		if s.runtimeBlocker != nil {
-			for _, account := range accounts {
-				if account != nil {
-					s.runtimeBlocker.ClearAccountSchedulingBlock(account.ID)
-				}
-			}
-		}
-		for _, account := range accounts {
-			if account != nil {
-				if err := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{CodexQuotaOverdraftProbeExtraKey: nil}); err != nil {
-					return nil, err
-				}
-			}
-		}
-		return accounts, nil
-	}
-
-	accounts := make([]*Account, 0, len(ids))
-	for _, id := range ids {
-		account, err := s.ClearAccountError(ctx, id)
-		if err != nil {
-			return nil, err
-		}
-		accounts = append(accounts, account)
-	}
-	return accounts, nil
 }
 
 func (s *adminServiceImpl) SetAccountError(ctx context.Context, id int64, errorMsg string) error {
@@ -1598,19 +1544,7 @@ func (s *adminServiceImpl) ResetAccountQuota(ctx context.Context, id int64) erro
 		return infraerrors.New(http.StatusBadRequest, "SPARK_SHADOW_NO_QUOTA_RESET",
 			"cannot reset quota for a spark shadow account; manage it on the parent account")
 	}
-	if err := s.accountRepo.ResetQuotaUsed(ctx, id); err != nil {
-		return err
-	}
-	if err := s.accountRepo.UpdateExtra(ctx, id, map[string]any{CodexQuotaOverdraftProbeExtraKey: nil}); err != nil {
-		return err
-	}
-	if err := s.accountRepo.ClearTempUnschedulable(ctx, id); err != nil {
-		return err
-	}
-	if s.runtimeBlocker != nil {
-		s.runtimeBlocker.ClearAccountSchedulingBlock(id)
-	}
-	return nil
+	return s.accountRepo.ResetQuotaUsed(ctx, id)
 }
 
 // EnsureOpenAIPrivacy 检查 OpenAI OAuth 账号是否已设置 privacy_mode，

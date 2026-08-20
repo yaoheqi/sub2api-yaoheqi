@@ -220,8 +220,7 @@ type Account struct {
 	CreatedAt               time.Time                      `json:"created_at"`
 	UpdatedAt               time.Time                      `json:"updated_at"`
 
-	Schedulable     bool                            `json:"schedulable"`
-	SchedulingState *service.AccountSchedulingState `json:"scheduling_state,omitempty"`
+	Schedulable bool `json:"schedulable"`
 
 	RateLimitedAt    *time.Time `json:"rate_limited_at"`
 	RateLimitResetAt *time.Time `json:"rate_limit_reset_at"`

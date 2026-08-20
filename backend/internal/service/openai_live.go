@@ -176,15 +176,6 @@ func (s *OpenAIGatewayService) CreateLiveCall(
 		}
 
 		account := selection.Account
-		if codexPrivacyEnabled(account) {
-			// Live/Realtime carries an opaque attestation and an arbitrary
-			// session/SDP envelope. It has no shared Codex privacy snapshot, so
-			// do not let a strict OAuth account enter this pool.
-			selection.ReleaseFunc()
-			excluded[account.ID] = struct{}{}
-			lastErr = errors.New("live is disabled for privacy-enabled OAuth accounts")
-			continue
-		}
 		leaseID := generateRequestID()
 		acquired, acquireErr := liveCache.AcquireLiveLease(
 			ctx,
@@ -454,9 +445,6 @@ func (s *OpenAIGatewayService) dialLiveSideband(ctx context.Context, record *Liv
 	}
 	if account == nil || !account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityLive) {
 		return nil, ErrLiveUnavailable
-	}
-	if codexPrivacyEnabled(account) {
-		return nil, errors.New("live sideband is disabled for privacy-enabled OAuth accounts")
 	}
 	headers, err := s.liveSidebandHeaders(ctx, account, record)
 	if err != nil {

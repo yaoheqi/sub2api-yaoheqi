@@ -106,7 +106,6 @@ func runOpenAIOAuthImageActualSizeTest(t *testing.T, stream bool) openAIOAuthIma
 		Name:     "openai-oauth",
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
-		Extra:    map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{
 			"access_token":       "token-123",
 			"chatgpt_account_id": "acct-123",

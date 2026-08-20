@@ -244,21 +244,6 @@ func (s *OpenAIGatewayService) FetchCodexModelsManifest(ctx context.Context, acc
 	if clientVersion == "" {
 		clientVersion = CodexCanonicalClientVersion()
 	}
-	if codexPrivacyEnabled(credAccount) {
-		if credAccount.IsOpenAIAgentIdentity() {
-			return nil, infraerrors.New(
-				http.StatusNotImplemented,
-				"OPENAI_CODEX_MODELS_PRIVACY_UNSUPPORTED",
-				codexPrivacyCapabilityError("Agent Identity Codex models manifests").Error(),
-			)
-		}
-		// client_version and If-None-Match are caller-controlled correlation
-		// material. Privacy accounts always use the gateway's canonical tuple;
-		// upstream cache validators are managed internally, never forwarded
-		// from the downstream client.
-		clientVersion = openAICodexProbeVersion
-		ifNoneMatch = ""
-	}
 
 	requestEndpoint := chatgptCodexModelsURL
 	authToken := ""
@@ -560,79 +545,15 @@ func (s *OpenAIGatewayService) fetchCodexModelsManifestUpstream(ctx context.Cont
 			}
 		}
 	}
-	// The WM route is delivered in Codex's local catalog but is hidden from
-	// the upstream manifest. Expose it through Sub2API without requiring an
-	// operator-side catalog edit; the upstream account still performs the
-	// actual authorization when the model is used.
-	changed := false
-	if !request.useAPIKeyUpstream {
-		body, changed, err = ensureCodexWMModel(body)
-		if err != nil {
-			return nil, &codexModelsManifestUpstreamError{
-				err: infraerrors.Newf(http.StatusBadGateway, "OPENAI_CODEX_MODELS_UPSTREAM_INVALID_MANIFEST", "codex models manifest could not add WM model: %v", err),
-				retryable: true,
-			}
-		}
-	}
 	etag := resp.Header.Get("ETag")
 	manifest := &CodexModelsManifest{Body: body, ETag: etag}
-	if request.useAPIKeyUpstream || changed {
+	if request.useAPIKeyUpstream {
 		manifest.upstreamETag = etag
 		if !bytes.Equal(body, upstreamBody) {
 			manifest.ETag = codexModelsManifestBodyETag(body)
 		}
 	}
 	return manifest, nil
-}
-
-// ensureCodexWMModel adds the hidden WM route to a valid Codex manifest while
-// preserving all upstream fields and ordering. It is deliberately idempotent.
-func ensureCodexWMModel(body []byte) ([]byte, bool, error) {
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(body, &envelope); err != nil || envelope == nil {
-		return nil, false, fmt.Errorf("decode JSON object: %w", err)
-	}
-	var models []json.RawMessage
-	if err := json.Unmarshal(envelope["models"], &models); err != nil {
-		return nil, false, fmt.Errorf("decode top-level models array: %w", err)
-	}
-	hasSol := false
-	for _, rawModel := range models {
-		var model map[string]json.RawMessage
-		if err := json.Unmarshal(rawModel, &model); err != nil || model == nil {
-			continue
-		}
-		var slug string
-		if err := json.Unmarshal(model["slug"], &slug); err == nil && slug == "gpt-5.6-sol-wm" {
-			return body, false, nil
-		}
-		if slug == "gpt-5.6-sol" {
-			hasSol = true
-		}
-	}
-	if !hasSol {
-		return body, false, nil
-	}
-	wmModel, err := json.Marshal(map[string]json.RawMessage{
-		"slug":            json.RawMessage(`"gpt-5.6-sol-wm"`),
-		"display_name":    json.RawMessage(`"GPT-5.6 Sol WM"`),
-		"visibility":      json.RawMessage(`"list"`),
-		"supported_in_api": json.RawMessage(`false`),
-	})
-	if err != nil {
-		return nil, false, fmt.Errorf("encode WM model: %w", err)
-	}
-	models = append(models, wmModel)
-	encoded, err := json.Marshal(models)
-	if err != nil {
-		return nil, false, fmt.Errorf("encode models array: %w", err)
-	}
-	envelope["models"] = encoded
-	updated, err := json.Marshal(envelope)
-	if err != nil {
-		return nil, false, fmt.Errorf("encode JSON object: %w", err)
-	}
-	return updated, true, nil
 }
 
 func codexModelsManifestBodyETag(body []byte) string {

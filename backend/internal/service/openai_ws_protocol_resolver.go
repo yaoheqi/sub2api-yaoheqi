@@ -42,14 +42,6 @@ func (r *defaultOpenAIWSProtocolResolver) Resolve(account *Account) OpenAIWSProt
 	if !account.IsOpenAI() {
 		return openAIWSHTTPDecision("platform_not_openai")
 	}
-	// Privacy-enabled OAuth accounts are restricted to the HTTP Responses
-	// path, whose final body/header sanitizer is the only implementation that
-	// can enforce the deployment-bound Codex identity policy. WS ingress has
-	// no equivalent per-frame sanitizer, so never select an upstream WS
-	// transport for these accounts.
-	if codexPrivacyEnabled(account) {
-		return openAIWSHTTPDecision("privacy_oauth_disabled")
-	}
 	if account.IsOpenAIWSForceHTTPEnabled() {
 		return openAIWSHTTPDecision("account_force_http")
 	}

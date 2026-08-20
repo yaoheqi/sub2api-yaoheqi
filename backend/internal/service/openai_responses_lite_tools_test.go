@@ -277,7 +277,7 @@ func TestOpenAIGatewayServiceForward_NormalizesResponsesLiteToolsForOAuth(t *tes
 				ID: 501, Name: "responses-lite", Platform: PlatformOpenAI, Type: AccountTypeOAuth,
 				Concurrency: 1, Status: StatusActive, Schedulable: true, RateMultiplier: f64p(1),
 				Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-account"},
-				Extra:       map[string]any{"openai_passthrough": passthrough, "codex_fingerprint_mode": "off"},
+				Extra:       map[string]any{"openai_passthrough": passthrough},
 			}
 			body := []byte(`{
 				"model":"gpt-5.6-terra","stream":true,"instructions":"test",

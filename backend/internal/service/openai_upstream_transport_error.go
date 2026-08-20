@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"syscall"
 	"time"
@@ -130,7 +129,7 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 		scheduleOllamaCloudUsageActivity(s.deferredService, account)
 	}
 
-	if classifyOpenAITransportError(err).Persistent && !isThirdPartyOpenAIAPIKeyAccount(account) {
+	if classifyOpenAITransportError(err).Persistent {
 		s.tempUnscheduleOpenAITransportError(ctx, account, safeErr)
 	}
 
@@ -138,18 +137,6 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 		StatusCode:   http.StatusBadGateway,
 		ResponseBody: openAITransportFailoverBody,
 	}
-}
-
-func isThirdPartyOpenAIAPIKeyAccount(account *Account) bool {
-	if account == nil || !account.IsOpenAIApiKey() {
-		return false
-	}
-	parsed, err := url.Parse(strings.TrimSpace(account.GetOpenAIBaseURL()))
-	if err != nil {
-		return false
-	}
-	hostname := strings.TrimSuffix(parsed.Hostname(), ".")
-	return hostname != "" && !strings.EqualFold(hostname, "api.openai.com")
 }
 
 // tempUnscheduleOpenAITransportError marks an account temporarily unschedulable

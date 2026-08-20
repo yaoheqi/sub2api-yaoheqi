@@ -34,7 +34,3 @@ func TestUsageBillingModelCandidates_BareGPT56IncludesSol(t *testing.T) {
 		usageBillingModelCandidates("openai/gpt-5.6"),
 	)
 }
-
-func TestNormalizeKnownOpenAICodexModel_WMRemainsWM(t *testing.T) {
-	require.Equal(t, "gpt-5.6-sol-wm", normalizeKnownOpenAICodexModel("gpt-5.6-sol-wm"))
-}

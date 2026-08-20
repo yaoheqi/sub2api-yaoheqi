@@ -1285,10 +1285,10 @@ func (s *adminServiceImpl) GenerateRedeemCodes(ctx context.Context, input *Gener
 				code.ValidityDays = 30 // 默认30天
 			}
 		}
+		if err := s.redeemCodeRepo.Create(ctx, &code); err != nil {
+			return nil, err
+		}
 		codes = append(codes, code)
-	}
-	if err := s.redeemCodeRepo.CreateBatch(ctx, codes); err != nil {
-		return nil, err
 	}
 	return codes, nil
 }
@@ -1298,9 +1298,6 @@ func (s *adminServiceImpl) DeleteRedeemCode(ctx context.Context, id int64) error
 }
 
 func (s *adminServiceImpl) BatchDeleteRedeemCodes(ctx context.Context, ids []int64) (int64, error) {
-	if batchRepo, ok := s.redeemCodeRepo.(RedeemCodeBatchDeleteRepository); ok {
-		return batchRepo.DeleteBatch(ctx, ids)
-	}
 	var deleted int64
 	for _, id := range ids {
 		if err := s.redeemCodeRepo.Delete(ctx, id); err == nil {

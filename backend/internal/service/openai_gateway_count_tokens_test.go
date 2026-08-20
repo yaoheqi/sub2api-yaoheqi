@@ -95,7 +95,6 @@ func TestOpenAIGatewayService_ForwardCountTokensAsAnthropic_OAuthFallsBackWhenPl
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{
 			"access_token":  "oauth-token",
 			"refresh_token": "oauth-refresh-token",

@@ -180,7 +180,6 @@ func TestForwardAsChatCompletions_UnknownModelWithoutMessagesDispatchKeepsReques
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -264,7 +263,6 @@ func TestForwardAsChatCompletions_OAuthDoesNotInjectDefaultInstructions(t *testi
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
@@ -302,7 +300,6 @@ func forwardOAuthChatCompletionsForUpstreamBody(t *testing.T, body []byte) []byt
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",

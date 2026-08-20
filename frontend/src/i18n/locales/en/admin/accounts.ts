@@ -118,6 +118,10 @@ export default {
         },
         apiProtocol: {
           title: 'API Protocol',
+          adaptive: 'Adaptive',
+          adaptiveDesc: 'Uses the matching native provider endpoint for each inbound protocol, converting only when unavailable.',
+          endpoints: 'Protocol endpoints',
+          responsesFallbackDesc: 'Responses requests are converted to Chat Completions because this provider has no native Responses endpoint.',
           chatCompletions: 'Chat Completions',
           chatCompletionsDesc: 'Standard OpenAI-compatible endpoint; requests in other formats are converted.',
           anthropic: 'Anthropic',
@@ -161,6 +165,7 @@ export default {
         expired: 'Expired',
         error: 'Error',
         cooldown: 'Cooldown',
+        paused: 'Paused',
         limited: 'Limited',
         rateLimited: 'Rate Limited',
         overloaded: 'Overloaded',
@@ -607,10 +612,10 @@ export default {
         codexCLIOnlyAppServerDesc:
           "Effective only when the switch above is on. When enabled, this account also allows third-party clients that embed the Codex engine over the app-server protocol (e.g. Claude Code's codex plugin); they still pass the global engine-fingerprint gate. OR-combined with the global app-server toggle.",
         codexFingerprintMode: 'Codex fingerprint convergence',
-        codexFingerprintModeDesc: 'When multiple users share the same OAuth account, converge device/session identifiers to account-level stable values to reduce upstream-visible device and session count. New OpenAI OAuth accounts default to Device + Session; choose Off only for an explicit compatibility opt-out.',
-        codexFingerprintOff: 'Off (explicit opt-out)',
+        codexFingerprintModeDesc: 'When multiple users share the same OAuth account, converge device/session identifiers to account-level stable values to reduce upstream-visible device and session count. Off by default (client identifiers pass through as-is); opt in explicitly when needed. Some accounts reported quota shrinkage after enabling convergence, so choose based on your own measurements.',
+        codexFingerprintOff: 'Off (passthrough, default)',
         codexFingerprintDevice: 'Device only',
-        codexFingerprintSession: 'Device + Session (default)',
+        codexFingerprintSession: 'Device + Session',
         codexFingerprintFull: 'Full convergence',
         codexImageTool: 'Codex image bridge policy',
         codexImageToolDesc:

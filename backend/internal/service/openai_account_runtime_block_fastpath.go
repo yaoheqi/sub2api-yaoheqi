@@ -55,6 +55,11 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	if s != nil {
 		scheduleOllamaCloudUsageActivity(s.deferredService, account)
 	}
+	// Capacity shedding describes this request, not account health. Keep the
+	// account schedulable while the request-local retry budget handles recovery.
+	if account != nil && account.Platform == PlatformOpenAI && isOpenAIRequestScopedCapacityShed("", responseBody) {
+		return false
+	}
 	stateCtx, cancel := openAIAccountStateContext(ctx)
 	defer cancel()
 
@@ -77,13 +82,7 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 		s.rateLimitService.maybeHandleOpenAITeamLinkedError(stateCtx, account, statusCode, responseBody)
 	}
 	stateCtx = withTempUnschedulableModel(stateCtx, canonicalModel)
-	preferredModel := ""
-	if len(canonicalModel) > 0 {
-		preferredModel = canonicalModel[0]
-	}
-	if statusCode == http.StatusTooManyRequests && s.codexQuotaOverdraft != nil &&
-		s.codexQuotaOverdraft.HandleQuota429(stateCtx, account, headers, responseBody, preferredModel) {
-		logSchedulingEvent("429_retry", account.ID, "scope", "codex_quota_overdraft")
+	if s.handleCodexQuotaOverdraftUpstream429(stateCtx, account, statusCode, headers, responseBody, canonicalModel) {
 		return false
 	}
 	if s.rateLimitService != nil && len(canonicalModel) > 0 && s.rateLimitService.HandleUpstreamModelNotFound(stateCtx, account, canonicalModel[0], statusCode, responseBody) {
@@ -258,28 +257,6 @@ func (s *OpenAIGatewayService) isOpenAIAccountRuntimeBlocked(account *Account) b
 	s.openaiAccountRuntimeBlockUntil.Delete(account.ID)
 	s.openaiAccountRuntimeBlockGeneration.Store(account.ID, s.openaiAccountRuntimeBlockSequence.Add(1))
 	return false
-}
-
-// SchedulingBlocks implements AccountRuntimeBlockReader. Runtime blocks are
-// intentionally additive to durable account blocks and expire lazily.
-func (s *OpenAIGatewayService) SchedulingBlocks(accountID int64, now time.Time) []AccountSchedulingBlock {
-	if s == nil || accountID <= 0 {
-		return nil
-	}
-	value, ok := s.openaiAccountRuntimeBlockUntil.Load(accountID)
-	if !ok {
-		return nil
-	}
-	until, ok := value.(time.Time)
-	if !ok || until.IsZero() || !now.Before(until) {
-		s.openaiAccountRuntimeBlockUntil.Delete(accountID)
-		return nil
-	}
-	return []AccountSchedulingBlock{{
-		Source: "runtime",
-		Reason: "runtime_circuit_breaker",
-		Until:  &until,
-	}}
 }
 
 func (s *OpenAIGatewayService) getOpenAIAccountModelTransientState() *openAIAccountModelTransientState {

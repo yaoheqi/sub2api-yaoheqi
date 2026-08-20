@@ -327,7 +327,7 @@ func TestNormalizedCodexLimits_OnlyPrimaryData(t *testing.T) {
 	}
 }
 
-func TestRateLimitService_HandleUpstreamError_403PolicyErrorDoesNotChangeAccountState(t *testing.T) {
+func TestRateLimitService_HandleUpstreamError_403PreservesOriginalUpstreamMessage(t *testing.T) {
 	repo := &rateLimitAccountRepoStub{}
 	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	account := &Account{
@@ -344,12 +344,13 @@ func TestRateLimitService_HandleUpstreamError_403PolicyErrorDoesNotChangeAccount
 		[]byte(`{"error":{"message":"workspace forbidden by policy","type":"invalid_request_error"}}`),
 	)
 
-	require.False(t, shouldDisable)
-	require.Zero(t, repo.setErrorCalls)
-	require.Zero(t, repo.tempCalls)
+	require.True(t, shouldDisable)
+	require.Equal(t, 1, repo.setErrorCalls)
+	require.Contains(t, repo.lastErrorMsg, "workspace forbidden by policy")
+	require.NotContains(t, repo.lastErrorMsg, "account may be suspended or lack permissions")
 }
 
-func TestRateLimitService_HandleUpstreamError_403AccessDeniedDoesNotChangeAccountState(t *testing.T) {
+func TestRateLimitService_HandleUpstreamError_403FallsBackToRawBody(t *testing.T) {
 	repo := &rateLimitAccountRepoStub{}
 	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	account := &Account{
@@ -366,9 +367,11 @@ func TestRateLimitService_HandleUpstreamError_403AccessDeniedDoesNotChangeAccoun
 		[]byte(`{"error":{"type":"access_denied","details":{"reason":"ip_blocked"}}}`),
 	)
 
-	require.False(t, shouldDisable)
-	require.Zero(t, repo.setErrorCalls)
-	require.Zero(t, repo.tempCalls)
+	require.True(t, shouldDisable)
+	require.Equal(t, 1, repo.setErrorCalls)
+	require.Contains(t, repo.lastErrorMsg, `"access_denied"`)
+	require.Contains(t, repo.lastErrorMsg, `"ip_blocked"`)
+	require.NotContains(t, repo.lastErrorMsg, "account may be suspended or lack permissions")
 }
 
 func TestNormalizedCodexLimits_OnlySecondaryData(t *testing.T) {

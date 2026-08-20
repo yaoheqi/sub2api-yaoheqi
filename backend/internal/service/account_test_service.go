@@ -82,10 +82,9 @@ func firstAccountTestOptions(opts []AccountTestOptions) AccountTestOptions {
 const maxAccountTestMediaBytes = 8 << 20
 
 const (
-	defaultGeminiTextTestPrompt   = "hi"
-	defaultGeminiImageTestPrompt  = "Generate a cute orange cat astronaut sticker on a clean pastel background."
-	defaultOpenAIImageTestPrompt  = "Generate a cute orange cat astronaut sticker on a clean pastel background."
-	defaultOpenAI429ProbeCooldown = 30 * time.Minute
+	defaultGeminiTextTestPrompt  = "hi"
+	defaultGeminiImageTestPrompt = "Generate a cute orange cat astronaut sticker on a clean pastel background."
+	defaultOpenAIImageTestPrompt = "Generate a cute orange cat astronaut sticker on a clean pastel background."
 	defaultGrokImageTestPrompt   = "Generate a cute orange cat astronaut sticker on a clean pastel background."
 	defaultGrokVideoTestPrompt   = "A red ball bouncing once on a white floor, short simple motion."
 	defaultGrokSearchTestQuery   = "xAI Grok"
@@ -287,6 +286,15 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	}
 
 	// Route to platform-specific test method
+	if account.IsCNProvider() {
+		switch account.GetAPIProtocol() {
+		case APIProtocolAdaptive:
+			return s.testCNProviderAdaptiveConnection(c, account, modelID, prompt)
+		case APIProtocolChatCompletions:
+			return s.testCNProviderChatCompletionsConnection(c, account, modelID, prompt)
+		}
+	}
+
 	if account.IsOpenAI() {
 		return s.testOpenAIAccountConnection(c, account, modelID, prompt, normalizeAccountTestMode(mode))
 	}
@@ -304,6 +312,27 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	}
 
 	return s.testClaudeAccountConnection(c, account, modelID)
+}
+
+func (s *AccountTestService) testCNProviderChatCompletionsConnection(c *gin.Context, account *Account, modelID string, prompt string) error {
+	testModelID := strings.TrimSpace(modelID)
+	if testModelID == "" {
+		testModelID = openai.DefaultTestModel
+	}
+	testModelID = account.GetMappedModel(testModelID)
+
+	authToken := strings.TrimSpace(account.GetOpenAIProtocolAPIKey())
+	if authToken == "" {
+		return s.sendErrorAndEnd(c, "No API key available")
+	}
+
+	baseURL := account.GetOpenAIBaseURL()
+	normalizedBaseURL, err := s.validateUpstreamBaseURL(baseURL)
+	if err != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
+	}
+
+	return s.testOpenAIChatCompletionsConnection(c, account, testModelID, prompt, normalizedBaseURL, authToken)
 }
 
 // testClaudeAccountConnection tests an Anthropic Claude account's connection
@@ -602,9 +631,6 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
 
 // testOpenAIAccountConnection tests an OpenAI account's connection
 func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account *Account, modelID string, prompt string, mode string) error {
-	if codexPrivacyEnabled(account) {
-		return s.sendErrorAndEnd(c, codexPrivacyCapabilityError("OpenAI account connectivity tests").Error())
-	}
 	ctx := c.Request.Context()
 	mode = normalizeAccountTestMode(mode)
 
@@ -642,9 +668,6 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 			return s.sendErrorAndEnd(c, err.Error())
 		}
 		credentialAccount = resolved
-	}
-	if codexPrivacyEnabled(credentialAccount) {
-		return s.sendErrorAndEnd(c, codexPrivacyCapabilityError("OpenAI account connectivity tests").Error())
 	}
 
 	// Determine authentication method and API URL
@@ -791,8 +814,10 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 				s.reconcileOpenAI429State(ctx, account, resp.Header, body)
 			}
 		}
+		// 401 Unauthorized: 标记账号为永久错误
 		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
-			s.reconcileOpenAI401State(ctx, account, body)
+			errMsg := fmt.Sprintf("Authentication failed (401): %s", string(body))
+			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
 		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
 	}
@@ -1995,12 +2020,6 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 // capability state on the account. The legacy unary /responses/compact
 // endpoint has been sunset upstream (404, #5598/#5624) and is no longer probed.
 func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account *Account, testModelID string) error {
-	// Keep the guard local to this raw probe as well as the public dispatcher.
-	// Future admin/test entry points must not accidentally recreate an
-	// unsanitized OAuth /responses request for a privacy-enabled account.
-	if codexPrivacyEnabled(account) {
-		return s.sendErrorAndEnd(c, codexPrivacyCapabilityError("OpenAI compact connectivity tests").Error())
-	}
 	ctx := c.Request.Context()
 	credentialAccount := account
 	if account.IsShadow() {
@@ -2009,9 +2028,6 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 			return s.sendErrorAndEnd(c, "Failed to resolve account credentials")
 		}
 		credentialAccount = resolved
-	}
-	if codexPrivacyEnabled(credentialAccount) {
-		return s.sendErrorAndEnd(c, codexPrivacyCapabilityError("OpenAI compact connectivity tests").Error())
 	}
 
 	authToken := ""
@@ -2089,9 +2105,6 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 		enforceCodexIdentityHeadersWithUA(req.Header, credentialAccount.GetOpenAIUserAgent())
 	}
 	probeSessionID := compactProbeSessionID(account.ID)
-	if isOAuth {
-		probeSessionID = compactProbeOAuthSessionID(account.ID)
-	}
 	req.Header.Set("Session_ID", probeSessionID)
 	req.Header.Set("Conversation_ID", probeSessionID)
 
@@ -2154,7 +2167,8 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
-			s.reconcileOpenAI401State(ctx, account, body)
+			errMsg := fmt.Sprintf("Authentication failed (401): %s", string(body))
+			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
 		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
 	}
@@ -2183,8 +2197,7 @@ func (s *AccountTestService) reconcileOpenAI429State(ctx context.Context, accoun
 		resetAt = &t
 	}
 	if resetAt == nil {
-		fallback := time.Now().Add(defaultOpenAI429ProbeCooldown)
-		resetAt = &fallback
+		return
 	}
 
 	if err := s.accountRepo.SetRateLimited(ctx, account.ID, *resetAt); err != nil {
@@ -2202,28 +2215,6 @@ func (s *AccountTestService) reconcileOpenAI429State(ctx context.Context, accoun
 		account.Status = StatusActive
 		account.ErrorMessage = ""
 	}
-}
-
-func (s *AccountTestService) reconcileOpenAI401State(ctx context.Context, account *Account, body []byte) {
-	if s == nil || s.accountRepo == nil || account == nil {
-		return
-	}
-	code := strings.ToLower(strings.TrimSpace(extractUpstreamErrorCode(body)))
-	permanentlyInvalid := code == "token_invalidated" || code == "token_revoked"
-	canRefresh := account.IsOpenAIOAuth() && strings.TrimSpace(account.GetOpenAIRefreshToken()) != ""
-	if permanentlyInvalid || !canRefresh {
-		errMsg := fmt.Sprintf("Authentication failed (401): %s", string(body))
-		_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
-		return
-	}
-
-	cooldownMinutes := 10
-	if s.cfg != nil && s.cfg.RateLimit.OAuth401CooldownMinutes > 0 {
-		cooldownMinutes = s.cfg.RateLimit.OAuth401CooldownMinutes
-	}
-	until := time.Now().Add(time.Duration(cooldownMinutes) * time.Minute)
-	reason := fmt.Sprintf("OAuth 401: refresh required: %s", string(body))
-	_ = s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, reason)
 }
 
 // testGeminiAccountConnection tests a Gemini account's connection
@@ -2959,12 +2950,6 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 
 // testOpenAIImageOAuth tests OpenAI image generation using an OAuth account via Codex /responses API.
 func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Context, account *Account, modelID, prompt string) error {
-	// This helper constructs a direct /responses image request and therefore
-	// cannot claim the shared privacy finalizer. Fail closed if a future caller
-	// bypasses testOpenAIAccountConnection.
-	if codexPrivacyEnabled(account) {
-		return s.sendErrorAndEnd(c, codexPrivacyCapabilityError("OpenAI OAuth image connectivity tests").Error())
-	}
 	credentialAccount := account
 	if account.IsShadow() {
 		resolved, err := resolveCredentialAccount(ctx, s.accountRepo, account)
@@ -2972,9 +2957,6 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 			return s.sendErrorAndEnd(c, "Failed to resolve account credentials")
 		}
 		credentialAccount = resolved
-	}
-	if codexPrivacyEnabled(credentialAccount) {
-		return s.sendErrorAndEnd(c, codexPrivacyCapabilityError("OpenAI OAuth image connectivity tests").Error())
 	}
 	authToken := ""
 	if !credentialAccount.IsOpenAIAgentIdentity() {
@@ -3094,6 +3076,13 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 }
 
 func (s *AccountTestService) sendEvent(c *gin.Context, event TestEvent) {
+	if event.Type == "test_complete" {
+		if suppress, ok := c.Get(accountTestSuppressCompletionContextKey); ok {
+			if suppressCompletion, _ := suppress.(bool); suppressCompletion {
+				return
+			}
+		}
+	}
 	eventJSON, _ := json.Marshal(event)
 	if _, err := fmt.Fprintf(c.Writer, "data: %s\n\n", eventJSON); err != nil {
 		log.Printf("failed to write SSE event: %v", err)

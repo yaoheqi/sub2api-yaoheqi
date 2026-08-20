@@ -12,7 +12,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
-	"github.com/lib/pq"
 
 	entsql "entgo.io/ent/dialect/sql"
 )
@@ -61,62 +60,6 @@ func (r *proxyRepository) Create(ctx context.Context, proxyIn *service.Proxy) er
 		applyProxyEntityToService(proxyIn, created)
 	}
 	return err
-}
-
-func (r *proxyRepository) CreateBatchMissing(ctx context.Context, proxies []service.Proxy) ([]service.Proxy, error) {
-	if len(proxies) == 0 {
-		return []service.Proxy{}, nil
-	}
-	names := make([]string, len(proxies))
-	protocols := make([]string, len(proxies))
-	hosts := make([]string, len(proxies))
-	ports := make([]int64, len(proxies))
-	usernames := make([]string, len(proxies))
-	passwords := make([]string, len(proxies))
-	for i := range proxies {
-		names[i], protocols[i], hosts[i] = proxies[i].Name, proxies[i].Protocol, proxies[i].Host
-		ports[i] = int64(proxies[i].Port)
-		usernames[i], passwords[i] = proxies[i].Username, proxies[i].Password
-	}
-	rows, err := r.sql.QueryContext(ctx, `
-		WITH input AS (
-			SELECT DISTINCT ON (host, port, username, password)
-				name, protocol, host, port::integer, username, password
-			FROM unnest($1::text[], $2::text[], $3::text[], $4::bigint[], $5::text[], $6::text[])
-				AS data(name, protocol, host, port, username, password)
-			ORDER BY host, port, username, password
-		)
-		INSERT INTO proxies
-			(name, protocol, host, port, username, password, status, fallback_mode, expiry_warn_days, created_at, updated_at)
-		SELECT input.name, input.protocol, input.host, input.port,
-			NULLIF(input.username, ''), NULLIF(input.password, ''), 'active', 'none', 0, NOW(), NOW()
-		FROM input
-		WHERE NOT EXISTS (
-			SELECT 1 FROM proxies existing
-			WHERE existing.deleted_at IS NULL
-				AND existing.host = input.host
-				AND existing.port = input.port
-				AND COALESCE(existing.username, '') = input.username
-				AND COALESCE(existing.password, '') = input.password
-		)
-		RETURNING id, name, protocol, host, port, COALESCE(username, ''), COALESCE(password, ''),
-			status, created_at, updated_at, fallback_mode, expiry_warn_days
-	`, pq.Array(names), pq.Array(protocols), pq.Array(hosts), pq.Array(ports), pq.Array(usernames), pq.Array(passwords))
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	created := make([]service.Proxy, 0, len(proxies))
-	for rows.Next() {
-		var item service.Proxy
-		if err := rows.Scan(&item.ID, &item.Name, &item.Protocol, &item.Host, &item.Port,
-			&item.Username, &item.Password, &item.Status, &item.CreatedAt, &item.UpdatedAt,
-			&item.FallbackMode, &item.ExpiryWarnDays); err != nil {
-			return nil, err
-		}
-		created = append(created, item)
-	}
-	return created, rows.Err()
 }
 
 func (r *proxyRepository) GetByID(ctx context.Context, id int64) (*service.Proxy, error) {
@@ -333,57 +276,6 @@ func enqueueProxyProbeAccountChanges(ctx context.Context, exec sqlExecutor, acco
 func (r *proxyRepository) Delete(ctx context.Context, id int64) error {
 	_, err := r.client.Proxy.Delete().Where(proxy.IDEQ(id)).Exec(ctx)
 	return err
-}
-
-func (r *proxyRepository) DeleteUnusedBatch(ctx context.Context, ids []int64) ([]int64, []int64, error) {
-	ids = sortedUniqueAccountIDs(ids)
-	if len(ids) == 0 {
-		return nil, nil, nil
-	}
-	rows, err := r.sql.QueryContext(ctx, `
-		WITH requested AS (
-			SELECT unnest($1::bigint[]) AS id
-		), existing AS (
-			SELECT proxies.id FROM proxies JOIN requested USING (id) WHERE proxies.deleted_at IS NULL
-		), blocked AS (
-			SELECT DISTINCT requested.id
-			FROM requested
-			WHERE EXISTS (SELECT 1 FROM accounts WHERE accounts.proxy_id = requested.id AND accounts.deleted_at IS NULL)
-			   OR EXISTS (SELECT 1 FROM proxies child WHERE child.backup_proxy_id = requested.id AND child.deleted_at IS NULL)
-		), deleted AS (
-			UPDATE proxies
-			SET deleted_at = NOW(), updated_at = NOW()
-			WHERE id IN (SELECT id FROM existing)
-			  AND id NOT IN (SELECT id FROM blocked)
-			RETURNING id
-		)
-		SELECT requested.id,
-			(existing.id IS NULL OR deleted.id IS NOT NULL) AS deleted,
-			blocked.id IS NOT NULL AS blocked
-		FROM requested
-		LEFT JOIN existing USING (id)
-		LEFT JOIN deleted USING (id)
-		LEFT JOIN blocked USING (id)
-	`, pq.Array(ids))
-	if err != nil {
-		return nil, nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	deletedIDs := make([]int64, 0, len(ids))
-	blockedIDs := make([]int64, 0)
-	for rows.Next() {
-		var id int64
-		var deleted, blocked bool
-		if err := rows.Scan(&id, &deleted, &blocked); err != nil {
-			return nil, nil, err
-		}
-		if blocked {
-			blockedIDs = append(blockedIDs, id)
-		} else if deleted {
-			deletedIDs = append(deletedIDs, id)
-		}
-	}
-	return deletedIDs, blockedIDs, rows.Err()
 }
 
 func (r *proxyRepository) List(ctx context.Context, params pagination.PaginationParams) ([]service.Proxy, *pagination.PaginationResult, error) {

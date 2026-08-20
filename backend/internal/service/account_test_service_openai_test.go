@@ -71,9 +71,6 @@ type openAIAccountTestRepo struct {
 	clearedErrorID     int64
 	setErrorID         int64
 	setErrorMsg        string
-	tempUnschedID      int64
-	tempUnschedUntil   *time.Time
-	tempUnschedReason  string
 }
 
 type accountTestOverdraftCoordinatorStub struct {
@@ -140,13 +137,6 @@ func (r *openAIAccountTestRepo) SetError(_ context.Context, id int64, errorMsg s
 	return nil
 }
 
-func (r *openAIAccountTestRepo) SetTempUnschedulable(_ context.Context, id int64, until time.Time, reason string) error {
-	r.tempUnschedID = id
-	r.tempUnschedUntil = &until
-	r.tempUnschedReason = reason
-	return nil
-}
-
 func TestAccountTestService_OpenAISuccessPersistsSnapshotFromHeaders(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, recorder := newTestContext()
@@ -170,7 +160,6 @@ func TestAccountTestService_OpenAISuccessPersistsSnapshotFromHeaders(t *testing.
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{"access_token": "test-token"},
 	}
 
@@ -246,7 +235,6 @@ func TestAccountTestService_OpenAIOAuthTestNormalizesGPT56Alias(t *testing.T) {
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{"access_token": "test-token"},
 	}
 
@@ -344,7 +332,6 @@ func TestAccountTestService_OpenAIStreamEOFBeforeCompletedFails(t *testing.T) {
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{"access_token": "test-token"},
 	}
 
@@ -375,7 +362,6 @@ func TestAccountTestService_OpenAI429PersistsSnapshotAndRateLimitState(t *testin
 		Type:        AccountTypeOAuth,
 		Status:      StatusError,
 		Concurrency: 1,
-		Extra:       map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{"access_token": "test-token"},
 	}
 
@@ -473,7 +459,6 @@ func TestAccountTestService_OpenAI429BodyOnlyPersistsRateLimitAndClearsStaleErro
 		Status:       StatusError,
 		ErrorMessage: "Access forbidden (403): account may be suspended or lack permissions",
 		Concurrency:  1,
-		Extra:        map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials:  map[string]any{"access_token": "test-token"},
 	}
 
@@ -503,7 +488,6 @@ func TestAccountTestService_OpenAI429SyncsObservedPlanType(t *testing.T) {
 		Type:        AccountTypeOAuth,
 		Status:      StatusActive,
 		Concurrency: 1,
-		Extra:       map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{"access_token": "test-token", "plan_type": "plus"},
 	}
 
@@ -531,7 +515,6 @@ func TestAccountTestService_OpenAI429ActiveAccountDoesNotClearError(t *testing.T
 		Type:        AccountTypeOAuth,
 		Status:      StatusActive,
 		Concurrency: 1,
-		Extra:       map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{"access_token": "test-token"},
 	}
 
@@ -544,7 +527,7 @@ func TestAccountTestService_OpenAI429ActiveAccountDoesNotClearError(t *testing.T
 	require.NotNil(t, account.RateLimitResetAt)
 }
 
-func TestAccountTestService_OpenAI429WithoutResetSignalUsesFallbackCooldown(t *testing.T) {
+func TestAccountTestService_OpenAI429WithoutResetSignalDoesNotMutateRuntimeState(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := newTestContext()
 
@@ -560,19 +543,17 @@ func TestAccountTestService_OpenAI429WithoutResetSignalUsesFallbackCooldown(t *t
 		Status:       StatusError,
 		ErrorMessage: "stale 403",
 		Concurrency:  1,
-		Extra:        map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials:  map[string]any{"access_token": "test-token"},
 	}
 
 	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4", "", "")
 	require.Error(t, err)
-	require.Equal(t, account.ID, repo.rateLimitedID)
-	require.NotNil(t, repo.rateLimitedAt)
-	require.WithinDuration(t, time.Now().Add(defaultOpenAI429ProbeCooldown), *repo.rateLimitedAt, 2*time.Second)
-	require.Equal(t, account.ID, repo.clearedErrorID)
-	require.Equal(t, StatusActive, account.Status)
-	require.Empty(t, account.ErrorMessage)
-	require.NotNil(t, account.RateLimitResetAt)
+	require.Zero(t, repo.rateLimitedID)
+	require.Nil(t, repo.rateLimitedAt)
+	require.Zero(t, repo.clearedErrorID)
+	require.Equal(t, StatusError, account.Status)
+	require.Equal(t, "stale 403", account.ErrorMessage)
+	require.Nil(t, account.RateLimitResetAt)
 }
 
 func TestAccountTestService_OpenAI401SetsPermanentErrorOnly(t *testing.T) {
@@ -590,7 +571,6 @@ func TestAccountTestService_OpenAI401SetsPermanentErrorOnly(t *testing.T) {
 		Type:        AccountTypeOAuth,
 		Status:      StatusActive,
 		Concurrency: 1,
-		Extra:       map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{"access_token": "test-token"},
 	}
 
@@ -601,51 +581,6 @@ func TestAccountTestService_OpenAI401SetsPermanentErrorOnly(t *testing.T) {
 	require.Zero(t, repo.rateLimitedID)
 	require.Zero(t, repo.clearedErrorID)
 	require.Nil(t, account.RateLimitResetAt)
-}
-
-func TestAccountTestService_OpenAIRecoverable401UsesTemporaryCooldown(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	ctx, _ := newTestContext()
-	resp := newJSONResponse(http.StatusUnauthorized, `{"error":{"message":"access token expired"}}`)
-	repo := &openAIAccountTestRepo{}
-	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
-	svc := &AccountTestService{
-		accountRepo:  repo,
-		httpUpstream: upstream,
-		cfg:          &config.Config{RateLimit: config.RateLimitConfig{OAuth401CooldownMinutes: 7}},
-	}
-	account := &Account{
-		ID: 81, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
-		Status: StatusActive, Concurrency: 1,
-		Credentials: map[string]any{"access_token": "expired", "refresh_token": "refreshable"},
-	}
-
-	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.5", "", "")
-	require.Error(t, err)
-	require.Zero(t, repo.setErrorID)
-	require.Equal(t, account.ID, repo.tempUnschedID)
-	require.NotNil(t, repo.tempUnschedUntil)
-	require.WithinDuration(t, time.Now().Add(7*time.Minute), *repo.tempUnschedUntil, 2*time.Second)
-	require.Contains(t, repo.tempUnschedReason, "OAuth 401")
-}
-
-func TestAccountTestService_OpenAIRevoked401RemainsPermanent(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	ctx, _ := newTestContext()
-	resp := newJSONResponse(http.StatusUnauthorized, `{"error":{"code":"token_revoked","message":"revoked"}}`)
-	repo := &openAIAccountTestRepo{}
-	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
-	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
-	account := &Account{
-		ID: 82, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
-		Status: StatusActive, Concurrency: 1,
-		Credentials: map[string]any{"access_token": "revoked", "refresh_token": "still-present"},
-	}
-
-	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.5", "", "")
-	require.Error(t, err)
-	require.Equal(t, account.ID, repo.setErrorID)
-	require.Zero(t, repo.tempUnschedID)
 }
 
 func TestAccountTestService_OpenAIAPIKeyResponsesUsesCodexProbeHeaders(t *testing.T) {

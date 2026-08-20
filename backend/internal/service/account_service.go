@@ -152,13 +152,6 @@ type AdminAccountRepository interface {
 	AccountBillingSettingsRepository
 }
 
-// AccountBatchMutationRepository exposes optimized mutations for admin batch
-// operations without widening AccountRepository for read-only implementations.
-type AccountBatchMutationRepository interface {
-	BulkClearErrors(ctx context.Context, ids []int64) ([]*Account, error)
-	BindGroupsBulk(ctx context.Context, accountIDs, groupIDs []int64) error
-}
-
 // AccountBulkUpdate describes the fields that can be updated in a bulk operation.
 // Nil pointers mean "do not change".
 type AccountBulkUpdate struct {

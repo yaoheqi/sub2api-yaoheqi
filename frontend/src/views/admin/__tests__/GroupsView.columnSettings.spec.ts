@@ -236,13 +236,11 @@ describe('admin GroupsView column settings', () => {
     getModelsListCandidates.mockReset()
     getUsageSummary.mockReset()
     getCapacitySummary.mockReset()
-    getLiveCapability.mockReset()
     listAccounts.mockReset()
     showError.mockReset()
     showSuccess.mockReset()
     isCurrentStep.mockReset()
     nextStep.mockReset()
-    getLiveCapability.mockResolvedValue({ supported: false })
 
     listGroups.mockResolvedValue({
       items: [createGroup()],

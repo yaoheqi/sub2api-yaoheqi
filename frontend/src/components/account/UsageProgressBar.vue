@@ -2,7 +2,7 @@
   <div>
     <!-- Window stats row (above progress bar) -->
     <div
-      v-if="!compact && windowStats && (windowStats.requests > 0 || windowStats.tokens > 0)"
+      v-if="windowStats && (windowStats.requests > 0 || windowStats.tokens > 0)"
       class="mb-0.5 flex items-center"
     >
       <div class="flex items-center gap-1.5 text-[9px] text-gray-500 dark:text-gray-400">
@@ -26,7 +26,6 @@
     </div>
 
     <CodexOverdraftStats
-      v-if="!compact"
       :active="overdraftActive"
       :stats="overdraftStats"
       :started-at="overdraftStartedAt"
@@ -83,7 +82,6 @@ const props = defineProps<{
   overdraftStats?: WindowStats | null
   overdraftStartedAt?: string | null
   overdraftRecoverAt?: string | null
-  compact?: boolean
 }>()
 
 const { t } = useI18n()

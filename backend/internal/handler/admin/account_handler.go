@@ -1713,37 +1713,6 @@ func (h *AccountHandler) BatchClearError(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	if batcher, ok := h.adminService.(interface {
-		BatchClearAccountErrors(context.Context, []int64) ([]*service.Account, error)
-	}); ok {
-		accounts, err := batcher.BatchClearAccountErrors(ctx, req.AccountIDs)
-		if err != nil {
-			response.ErrorFrom(c, err)
-			return
-		}
-		found := make(map[int64]*service.Account, len(accounts))
-		for _, account := range accounts {
-			if account != nil {
-				found[account.ID] = account
-				if h.tokenCacheInvalidator != nil && account.IsOAuth() {
-					if invalidateErr := h.tokenCacheInvalidator.InvalidateToken(ctx, account); invalidateErr != nil {
-						log.Printf("[WARN] Failed to invalidate token cache for account %d: %v", account.ID, invalidateErr)
-					}
-				}
-			}
-		}
-		errorsOut := make([]gin.H, 0)
-		for _, id := range req.AccountIDs {
-			if _, exists := found[id]; !exists {
-				errorsOut = append(errorsOut, gin.H{"account_id": id, "error": "account not found"})
-			}
-		}
-		response.Success(c, gin.H{
-			"total": len(req.AccountIDs), "success": len(found),
-			"failed": len(errorsOut), "errors": errorsOut,
-		})
-		return
-	}
 
 	const maxConcurrency = 10
 	g, gctx := errgroup.WithContext(ctx)
@@ -2049,28 +2018,57 @@ func (h *AccountHandler) BatchUpdateCredentials(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	result, err := h.adminService.BulkUpdateAccounts(ctx, &service.BulkUpdateAccountsInput{
-		AccountIDs:  req.AccountIDs,
-		Credentials: map[string]any{req.Field: req.Value},
-	})
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
+
+	// 阶段一：预验证所有账号存在，收集 credentials
+	type accountUpdate struct {
+		ID          int64
+		Credentials map[string]any
 	}
-	results := make([]gin.H, 0, len(result.Results))
-	for _, item := range result.Results {
-		row := gin.H{"account_id": item.AccountID, "success": item.Success}
-		if item.Error != "" {
-			row["error"] = item.Error
+	updates := make([]accountUpdate, 0, len(req.AccountIDs))
+	for _, accountID := range req.AccountIDs {
+		account, err := h.adminService.GetAccount(ctx, accountID)
+		if err != nil {
+			response.Error(c, 404, fmt.Sprintf("Account %d not found", accountID))
+			return
 		}
-		results = append(results, row)
+		if account.Credentials == nil {
+			account.Credentials = make(map[string]any)
+		}
+		account.Credentials[req.Field] = req.Value
+		updates = append(updates, accountUpdate{ID: accountID, Credentials: account.Credentials})
+	}
+
+	// 阶段二：依次更新，返回每个账号的成功/失败明细，便于调用方重试
+	success := 0
+	failed := 0
+	successIDs := make([]int64, 0, len(updates))
+	failedIDs := make([]int64, 0, len(updates))
+	results := make([]gin.H, 0, len(updates))
+	for _, u := range updates {
+		updateInput := &service.UpdateAccountInput{Credentials: u.Credentials}
+		if _, err := h.adminService.UpdateAccount(ctx, u.ID, updateInput); err != nil {
+			failed++
+			failedIDs = append(failedIDs, u.ID)
+			results = append(results, gin.H{
+				"account_id": u.ID,
+				"success":    false,
+				"error":      err.Error(),
+			})
+			continue
+		}
+		success++
+		successIDs = append(successIDs, u.ID)
+		results = append(results, gin.H{
+			"account_id": u.ID,
+			"success":    true,
+		})
 	}
 
 	response.Success(c, gin.H{
-		"success":     result.Success,
-		"failed":      result.Failed,
-		"success_ids": result.SuccessIDs,
-		"failed_ids":  result.FailedIDs,
+		"success":     success,
+		"failed":      failed,
+		"success_ids": successIDs,
+		"failed_ids":  failedIDs,
 		"results":     results,
 	})
 }
@@ -2578,19 +2576,15 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 
 	// Handle OpenAI accounts
 	if account.IsOpenAI() {
-		defaultModels := openai.DefaultModels
-		if account.IsOpenAIOAuth() {
-			defaultModels = openai.CodexOAuthDefaultModels
-		}
 		// OpenAI 自动透传会绕过常规模型改写，测试/模型列表也应回落到默认模型集。
 		if account.IsOpenAIPassthroughEnabled() {
-			response.Success(c, defaultModels)
+			response.Success(c, openai.DefaultModels)
 			return
 		}
 
 		mapping := account.GetModelMapping()
 		if len(mapping) == 0 {
-			response.Success(c, defaultModels)
+			response.Success(c, openai.DefaultModels)
 			return
 		}
 
@@ -2598,7 +2592,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		var models []openai.Model
 		for requestedModel := range mapping {
 			var found bool
-			for _, dm := range defaultModels {
+			for _, dm := range openai.DefaultModels {
 				if dm.ID == requestedModel {
 					models = append(models, dm)
 					found = true

@@ -830,6 +830,53 @@ type ProxyFallbackConfig struct {
 
 type ProxyProbeConfig struct {
 	InsecureSkipVerify bool `mapstructure:"insecure_skip_verify"` // 已禁用：禁止跳过 TLS 证书验证
+	// URLs 按优先级排列的自定义探测 URL 列表。
+	// 留空时使用内置默认列表（ip-api → ipify）。
+	// 某些 AI API 专用代理只允许访问特定域名，配置多个备选可提高探测成功率。
+	URLs []ProbeURLConfig `mapstructure:"urls"`
+}
+
+// ProbeURLConfig 描述一个探测端点及其响应解析方式。
+type ProbeURLConfig struct {
+	URL    string `mapstructure:"url"`
+	Parser string `mapstructure:"parser"` // "ip-api" / "ipify" / "chatgpt-trace"
+}
+
+func normalizeProxyProbeURLs(targets []ProbeURLConfig) ([]ProbeURLConfig, error) {
+	if len(targets) == 0 {
+		return nil, nil
+	}
+
+	normalized := make([]ProbeURLConfig, 0, len(targets))
+	for i, target := range targets {
+		rawURL := strings.TrimSpace(target.URL)
+		parser := strings.ToLower(strings.TrimSpace(target.Parser))
+		if rawURL == "" {
+			return nil, fmt.Errorf("entry %d: url is required", i)
+		}
+		if parser == "" {
+			return nil, fmt.Errorf("entry %d: parser is required", i)
+		}
+		switch parser {
+		case "ip-api", "ipify", "chatgpt-trace":
+		default:
+			return nil, fmt.Errorf("entry %d: unsupported parser %q", i, target.Parser)
+		}
+
+		parsed, err := url.Parse(rawURL)
+		if err != nil || parsed.Host == "" {
+			return nil, fmt.Errorf("entry %d: invalid url %q", i, target.URL)
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return nil, fmt.Errorf("entry %d: url scheme must be http or https", i)
+		}
+
+		normalized = append(normalized, ProbeURLConfig{
+			URL:    rawURL,
+			Parser: parser,
+		})
+	}
+	return normalized, nil
 }
 
 type BillingConfig struct {
@@ -881,11 +928,6 @@ const (
 
 // GatewayConfig API网关相关配置
 type GatewayConfig struct {
-	// CodexFingerprintSecret is a deployment-scoped secret used to derive
-	// pseudonymous Codex identity values. It is persisted in security_secrets
-	// when omitted, so all replicas of one deployment share a value while
-	// separate databases get different fingerprints.
-	CodexFingerprintSecret string `mapstructure:"codex_fingerprint_secret"`
 	// 等待上游响应头的超时时间（秒），0表示无超时
 	// 注意：这不影响流式数据传输，只控制等待响应头的时间
 	ResponseHeaderTimeout int `mapstructure:"response_header_timeout"`
@@ -991,9 +1033,6 @@ type GatewayConfig struct {
 	ImageStreamKeepaliveInterval int `mapstructure:"image_stream_keepalive_interval"`
 	// ImageNonstreamKeepaliveInterval: 图片非流式 JSON keepalive 间隔（秒），0表示禁用
 	ImageNonstreamKeepaliveInterval int `mapstructure:"image_nonstream_keepalive_interval"`
-	// ImageURLRewriteFrom/To: 将图片响应中的指定上游 URL 前缀改写为外部可访问地址。
-	ImageURLRewriteFrom string `mapstructure:"image_url_rewrite_from"`
-	ImageURLRewriteTo   string `mapstructure:"image_url_rewrite_to"`
 	// MaxLineSize: 上游 SSE 单行最大字节数（0使用默认值）
 	MaxLineSize int `mapstructure:"max_line_size"`
 
@@ -2205,10 +2244,6 @@ func setDefaults() {
 	viper.SetDefault("jwt.refresh_token_expire_days", 30)  // 30天Refresh Token有效期
 	viper.SetDefault("jwt.refresh_window_minutes", 2)      // 过期前2分钟开始允许刷新
 
-	// Codex privacy identity. An empty value is filled from the shared
-	// security_secrets store during database bootstrap.
-	viper.SetDefault("gateway.codex_fingerprint_secret", "")
-
 	// TOTP
 	viper.SetDefault("totp.encryption_key", "")
 
@@ -2417,8 +2452,6 @@ func setDefaults() {
 	viper.SetDefault("gateway.image_stream_data_interval_timeout", 900)
 	viper.SetDefault("gateway.image_stream_keepalive_interval", 10)
 	viper.SetDefault("gateway.image_nonstream_keepalive_interval", 0)
-	viper.SetDefault("gateway.image_url_rewrite_from", "")
-	viper.SetDefault("gateway.image_url_rewrite_to", "")
 	viper.SetDefault("gateway.max_line_size", 500*1024*1024)
 	viper.SetDefault("gateway.scheduling.sticky_session_max_waiting", 3)
 	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)
@@ -2587,6 +2620,11 @@ func (c *Config) Validate() error {
 	}
 	c.Security.ForwardedClientIPHeaders = forwardedClientIPHeaders
 	c.SetForwardedClientIPSettings(c.Security.TrustForwardedIPForAPIKeyACL, forwardedClientIPHeaders)
+	proxyProbeURLs, err := normalizeProxyProbeURLs(c.Security.ProxyProbe.URLs)
+	if err != nil {
+		return fmt.Errorf("security.proxy_probe.urls: %w", err)
+	}
+	c.Security.ProxyProbe.URLs = proxyProbeURLs
 	if c.Server.ReadHeaderTimeout < 1 || c.Server.ReadHeaderTimeout > 60 {
 		return fmt.Errorf("server.read_header_timeout must be between 1 and 60 seconds")
 	}

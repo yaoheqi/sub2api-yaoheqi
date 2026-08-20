@@ -197,8 +197,8 @@ func TestFetchCodexModelsManifestPassthrough(t *testing.T) {
 	if gotOriginator != openai.CodexDefaultOriginator {
 		t.Errorf("originator header: got %q", gotOriginator)
 	}
-	if gotClientVersion != openAICodexProbeVersion {
-		t.Errorf("privacy client_version query: got %q, want %q", gotClientVersion, openAICodexProbeVersion)
+	if gotClientVersion != "0.137.0" {
+		t.Errorf("client_version query: got %q", gotClientVersion)
 	}
 }
 
@@ -208,7 +208,6 @@ func TestFetchCodexModelsManifestAgentIdentityUsesAssertionWithoutOAuthToken(t *
 		ID:       3,
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
-		Extra:    map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"auth_mode":          OpenAIAuthModeAgentIdentity,
 			"agent_runtime_id":   key.runtimeID,
@@ -252,7 +251,6 @@ func TestFetchCodexModelsManifestAgentIdentityRecoversInvalidTaskOnce(t *testing
 		ID:       4,
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
-		Extra:    map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"auth_mode":          OpenAIAuthModeAgentIdentity,
 			"agent_runtime_id":   key.runtimeID,
@@ -307,7 +305,6 @@ func TestFetchCodexModelsManifestAgentIdentityRedactsUpstreamErrors(t *testing.T
 		ID:       5,
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
-		Extra:    map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"auth_mode":          OpenAIAuthModeAgentIdentity,
 			"agent_runtime_id":   key.runtimeID,
@@ -377,8 +374,8 @@ func TestFetchCodexModelsManifestNotModified(t *testing.T) {
 	if !manifest.NotModified {
 		t.Error("expected NotModified to be true")
 	}
-	if gotIfNoneMatch != "" {
-		t.Errorf("privacy request must not forward client if-none-match: got %q", gotIfNoneMatch)
+	if gotIfNoneMatch != `W/"abc123"` {
+		t.Errorf("if-none-match header: got %q", gotIfNoneMatch)
 	}
 }
 
@@ -571,20 +568,7 @@ func TestFetchCodexModelsManifestOAuthPreservesResponsesLite(t *testing.T) {
 	s := &OpenAIGatewayService{}
 	manifest, err := s.FetchCodexModelsManifest(context.Background(), newCodexModelsTestAccount(), "0.145.0", "")
 	require.NoError(t, err)
-	require.Contains(t, string(manifest.Body), `"slug":"gpt-5.6-sol-wm"`)
-	require.Contains(t, string(manifest.Body), `"use_responses_lite":true`)
-}
-
-func TestEnsureCodexWMModelIsIdempotent(t *testing.T) {
-	body := []byte(`{"models":[{"slug":"gpt-5.6-sol"}],"metadata":{"version":1}}`)
-	updated, changed, err := ensureCodexWMModel(body)
-	require.NoError(t, err)
-	require.True(t, changed)
-	require.Contains(t, string(updated), `"slug":"gpt-5.6-sol-wm"`)
-	again, changedAgain, err := ensureCodexWMModel(updated)
-	require.NoError(t, err)
-	require.False(t, changedAgain)
-	require.Equal(t, string(updated), string(again))
+	require.Equal(t, manifestBody, string(manifest.Body))
 }
 
 func TestConvertOpenAIModelListToCodexManifest(t *testing.T) {

@@ -70,7 +70,6 @@ func TestForwardAlphaSearchOAuthPreservesWire(t *testing.T) {
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-account",
@@ -132,7 +131,6 @@ func TestForwardAlphaSearchPATUsesResponsesWebSearchFallback(t *testing.T) {
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{
 			"access_token":               "at-test-token",
 			"auth_mode":                  OpenAIAuthModePersonalAccessToken,
@@ -215,7 +213,6 @@ func TestForwardAlphaSearchPATBackfillsMissingChatGPTAccountMetadata(t *testing.
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{
 			"access_token": "at-test-token",
 			"auth_mode":    OpenAIAuthModePersonalAccessToken,
@@ -333,7 +330,6 @@ func TestForwardAlphaSearchUnauthorizedDoesNotMarkAccountError(t *testing.T) {
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{
 			// 刻意不设置 auth_mode：覆盖历史上把 at- token 当普通 OAuth 导入的账号。
 			"access_token":       "at-test-token",
@@ -377,7 +373,6 @@ func TestForwardAlphaSearchPATResponsesFallbackUnauthorizedDoesNotMarkAccountErr
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{
 			"access_token":       "at-test-token",
 			"auth_mode":          OpenAIAuthModePersonalAccessToken,
@@ -465,7 +460,6 @@ func TestForwardAlphaSearchOAuthNotFoundPassesThrough(t *testing.T) {
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{"codex_fingerprint_mode": "off"},
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-account",

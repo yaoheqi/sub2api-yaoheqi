@@ -36,7 +36,6 @@ func TestOpenAIGatewayService_Forward_CompactOnlyModelMappingOverridesOAuthUpstr
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":          "oauth-token",
 			"chatgpt_account_id":    "chatgpt-acc",
@@ -76,7 +75,6 @@ func TestOpenAIGatewayService_Forward_NonCompactRequestIgnoresCompactOnlyModelMa
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
-		Extra:       map[string]any{codexFingerprintModeExtraKey: "off"},
 		Credentials: map[string]any{
 			"access_token":          "oauth-token",
 			"chatgpt_account_id":    "chatgpt-acc",
@@ -122,10 +120,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_CompactOnlyModelMappingOverridesU
 			"chatgpt_account_id":    "chatgpt-acc",
 			"compact_model_mapping": map[string]any{"gpt-5.4": "gpt-5.4-openai-compact"},
 		},
-		Extra: map[string]any{
-			"openai_passthrough":         true,
-			codexFingerprintModeExtraKey: "off",
-		},
+		Extra:       map[string]any{"openai_passthrough": true},
 		Status:      StatusActive,
 		Schedulable: true,
 	}

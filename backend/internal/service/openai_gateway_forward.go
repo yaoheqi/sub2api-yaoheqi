@@ -104,6 +104,8 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	requestView := newOpenAIRequestView(body)
 	reqModel, reqStream, promptCacheKey := requestView.Model, requestView.Stream, requestView.PromptCacheKey
 	originalModel := reqModel
+	nativeDeepSeekResponses := account.Platform == PlatformDeepseek &&
+		(account.GetAPIProtocol() == APIProtocolResponses || account.IsAdaptiveAPIProtocol())
 
 	if account.Platform == PlatformGrok {
 		return s.forwardGrokResponses(ctx, c, account, body, originalModel, reqStream, startTime)
@@ -286,7 +288,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 	instructions := gjson.GetBytes(body, "instructions")
 	instructionsEmpty := !instructions.Exists() || instructions.Type != gjson.String || strings.TrimSpace(instructions.String()) == ""
-	if instructionsEmpty && !compatMessagesBridge {
+	if instructionsEmpty && !compatMessagesBridge && !nativeDeepSeekResponses {
 		markPatchSet("instructions", defaultCodexSynthInstructions(reqModel))
 	}
 
@@ -418,28 +420,29 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if codexResult.Modified {
 			markDecodedModified()
 		}
-		// 补齐部署级匿名 installation 标识；即使客户端带有 openai_device_id，
-		// 也只参与 HMAC，不得把原值写入请求体。compact 也必须经过同一策略。
-		if codexPrivacyEnabled(account) && applyCodexClientMetadata(decoded, account, s.codexFingerprintSecret()) {
+		// 带真实 device_id 时补齐 client_metadata 安装标识，与真实 Codex 对齐（compact 形态不同，跳过）。
+		if !isCompactRequest && applyCodexClientMetadata(decoded, account) {
 			markDecodedModified()
 		}
 		stageCodexFingerprintIDs(c, nil)
 		// 指纹收敛：一次性解析收敛 ID，请求体和出站头共享同一份 IDs（保证 turn_id 等随机字段一致）。
 		// fingerprintIDs 在此处解析，后续 buildUpstreamRequest 中使用同一份。
-		var clientHeaders http.Header
-		if c != nil && c.Request != nil {
-			clientHeaders = c.Request.Header
-		}
-		fpIDs := resolveCodexFingerprintIDsFromRequest(account, clientHeaders, s.codexFingerprintSecret())
-		if fpIDs != nil {
-			if applyCodexFingerprintClientMetadata(decoded, fpIDs) {
-				markDecodedModified()
+		if !isCompactRequest {
+			var clientHeaders http.Header
+			if c != nil && c.Request != nil {
+				clientHeaders = c.Request.Header
 			}
+			fpIDs := resolveCodexFingerprintIDsFromRequest(account, clientHeaders)
+			if fpIDs != nil {
+				if applyCodexFingerprintClientMetadata(decoded, fpIDs) {
+					markDecodedModified()
+				}
+			}
+			// 将 fpIDs 存入 gin context，供 buildUpstreamRequest 中头改写使用。
+			// 无条件覆写（含 nil）：failover 从收敛账号切到 off 账号时，上一
+			// 账号的 IDs 不得残留（stageCodexFingerprintIDs 注释）。
+			stageCodexFingerprintIDs(c, fpIDs)
 		}
-		// 将 fpIDs 存入 gin context，供 buildUpstreamRequest 中头改写使用。
-		// 无条件覆写（含 nil）：failover 从收敛账号切到 off 账号时，上一
-		// 账号的 IDs 不得残留（stageCodexFingerprintIDs 注释）。
-		stageCodexFingerprintIDs(c, fpIDs)
 		if codexResult.NormalizedModel != "" {
 			upstreamModel = codexResult.NormalizedModel
 		}
@@ -458,7 +461,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		maxOutputTokens := gjson.GetBytes(body, "max_output_tokens")
 		if maxOutputTokens.Exists() {
 			switch account.Platform {
-			case PlatformOpenAI:
+			case PlatformOpenAI, PlatformDeepseek:
 				// Preserve Responses-native output limits unless the selected upstream
 				// explicitly rejects the field in the bounded HTTP retry loop below.
 			case PlatformAnthropic:
@@ -926,8 +929,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				continue
 			}
 			if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
-				upstreamDetail := s.codexPrivacyUpstreamErrorDetail(account, respBody)
-				opsMessage := codexPrivacyUpstreamMessage(account, resp.StatusCode, upstreamMsg)
+				upstreamDetail := ""
+				if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+					maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
+					if maxBytes <= 0 {
+						maxBytes = 2048
+					}
+					upstreamDetail = truncateString(string(respBody), maxBytes)
+				}
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 					Platform:           account.Platform,
 					AccountID:          account.ID,
@@ -935,7 +944,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					UpstreamStatusCode: resp.StatusCode,
 					UpstreamRequestID:  resp.Header.Get("x-request-id"),
 					Kind:               "failover",
-					Message:            opsMessage,
+					Message:            upstreamMsg,
 					Detail:             upstreamDetail,
 				})
 
@@ -943,8 +952,8 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				return nil, newOpenAIUpstreamFailoverError(
 					resp.StatusCode,
 					resp.Header,
-					codexPrivacyUpstreamErrorBody(account, resp.StatusCode, respBody),
-					opsMessage,
+					respBody,
+					upstreamMsg,
 					!shouldDisable && account.IsPoolMode() && (account.IsPoolModeRetryableStatus(resp.StatusCode) || isOpenAITransientProcessingError(resp.StatusCode, upstreamMsg, respBody)),
 				)
 			}
@@ -1033,19 +1042,26 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 }
 
 func shouldForwardOpenAIResponsesViaRawChatCompletions(account *Account) bool {
-	return account != nil &&
-		account.Type == AccountTypeAPIKey &&
-		!openai_compat.ShouldUseResponsesAPI(account.Extra)
+	if account == nil || account.Type != AccountTypeAPIKey {
+		return false
+	}
+	if account.IsCNProvider() {
+		// CN 的显式协议配置优先于异步探针 Extra；adaptive 仅 DeepSeek 有原生
+		// Responses，Kimi/GLM 回退 Chat Completions。
+		switch account.GetAPIProtocol() {
+		case APIProtocolChatCompletions:
+			return true
+		case APIProtocolAdaptive:
+			return account.Platform != PlatformDeepseek
+		default:
+			return false
+		}
+	}
+	return !openai_compat.ShouldUseResponsesAPI(account.Extra)
 }
 
 func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token string, isStream bool, promptCacheKey string, isCodexCLI bool) (*http.Request, error) {
 	body = s.prepareCodexQuotaOverdraftBody(ctx, account, isOpenAIResponsesCompactPath(c), body)
-	if codexPrivacyEnabled(account) && account.IsOpenAIAgentIdentity() {
-		return nil, codexPrivacyCapabilityError("Agent Identity")
-	}
-	if codexPrivacyEnabled(account) && !IsCodexPrivacyResponsesRequestPathAllowed(c) {
-		return nil, codexPrivacyCapabilityError("unmapped Responses subpath")
-	}
 	// Determine target URL based on account type
 	var targetURL string
 	switch account.Type {
@@ -1055,6 +1071,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	case AccountTypeAPIKey:
 		// API Key accounts use Platform API or custom base URL
 		baseURL := account.GetOpenAIBaseURL()
+		if account.Platform == PlatformDeepseek && account.IsAdaptiveAPIProtocol() {
+			baseURL = account.GetCNProtocolBaseURL(APIProtocolResponses)
+		}
 		if baseURL == "" {
 			targetURL = openaiPlatformAPIURL
 		} else {
@@ -1068,14 +1087,6 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 		targetURL = openaiPlatformAPIURL
 	}
 	targetURL = appendOpenAIResponsesRequestPathSuffix(targetURL, openAIResponsesRequestPathSuffix(c))
-	privacyIDs := ensureStagedCodexFingerprintIDs(c, account, s.codexFingerprintSecret())
-	if codexPrivacyEnabled(account) {
-		sanitizedBody, sanitizeErr := sanitizeCodexPrivacyRequestBody(body, account, privacyIDs, s.codexFingerprintSecret())
-		if sanitizeErr != nil {
-			return nil, sanitizeErr
-		}
-		body = sanitizedBody
-	}
 
 	// DeepSeek 原生 Responses 端点为无状态实现：强制 store=false、清除
 	// previous_response_id，避免携带状态字段被上游拒绝。
@@ -1189,9 +1200,6 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	// 保证不被覆盖丢失）。
 	applyOpenAICodexBetaFeatures(c, account, req.Header)
 	setOpenAICodexRoutingHintFromBody(req.Header, account, body)
-	// Final privacy invariant: all transforms above may add headers or rewrite
-	// metadata, so the sanitizer must run after routing/beta/overrides.
-	sanitizeCodexPrivacyHeaders(req.Header, account, privacyIDs, body, s.codexFingerprintSecret())
 	logOpenAIRoutingDiagnosticsFromBody(ctx, account, "http", req.Header, body, "not_applicable")
 
 	return req, nil
@@ -1204,28 +1212,5 @@ func (s *OpenAIGatewayService) codexIdentityOverrideUA(account *Account) string 
 	if s != nil && s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
 		return ""
 	}
-	// Privacy-enabled OAuth accounts must not reuse an administrator-supplied
-	// browser/OS/terminal UA. The canonical gateway tuple is selected by the
-	// identity enforcer instead.
-	if codexPrivacyEnabled(account) {
-		return ""
-	}
 	return account.GetOpenAIUserAgent()
-}
-
-// codexFingerprintSecret returns the deployment-scoped secret loaded during DB bootstrap.
-// It must never be derived from account.ID: two independent deployments may number accounts
-// identically but must still emit different pseudonymous identities.
-func (s *OpenAIGatewayService) codexFingerprintSecret() string {
-	if s == nil || s.cfg == nil {
-		return ""
-	}
-	secret := strings.TrimSpace(s.cfg.Gateway.CodexFingerprintSecret)
-	if !codexFingerprintSecretUsable(secret) {
-		// A production gateway must have the shared bootstrap secret.  Returning
-		// empty here deliberately makes the privacy request fail closed rather
-		// than deriving process-local IDs that differ across replicas.
-		return ""
-	}
-	return secret
 }

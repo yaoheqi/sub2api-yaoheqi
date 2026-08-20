@@ -18,7 +18,6 @@ type accountRepoStubForClearAccountError struct {
 	clearAntigravityCalls    int
 	clearModelRateLimitCalls int
 	clearTempUnschedCalls    int
-	updateExtraCalls         int
 }
 
 func (r *accountRepoStubForClearAccountError) GetByID(ctx context.Context, id int64) (*Account, error) {
@@ -56,14 +55,6 @@ func (r *accountRepoStubForClearAccountError) ClearTempUnschedulable(ctx context
 	return nil
 }
 
-func (r *accountRepoStubForClearAccountError) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
-	r.updateExtraCalls++
-	if updates[CodexQuotaOverdraftProbeExtraKey] == nil {
-		delete(r.account.Extra, CodexQuotaOverdraftProbeExtraKey)
-	}
-	return nil
-}
-
 func TestAdminService_ClearAccountError_AlsoClearsRecoverableRuntimeState(t *testing.T) {
 	until := time.Now().Add(10 * time.Minute)
 	resetAt := time.Now().Add(5 * time.Minute)
@@ -90,7 +81,6 @@ func TestAdminService_ClearAccountError_AlsoClearsRecoverableRuntimeState(t *tes
 	require.Equal(t, 1, repo.clearAntigravityCalls)
 	require.Equal(t, 1, repo.clearModelRateLimitCalls)
 	require.Equal(t, 1, repo.clearTempUnschedCalls)
-	require.Equal(t, 1, repo.updateExtraCalls)
 	require.Nil(t, updated.RateLimitResetAt)
 	require.Nil(t, updated.TempUnschedulableUntil)
 	require.Empty(t, updated.TempUnschedulableReason)

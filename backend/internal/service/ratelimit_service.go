@@ -84,6 +84,9 @@ const (
 	openAI403CounterWindowMinutes   = 180
 )
 
+// openAI403BillingMarkers identifies account-level billing failures. Keep this
+// list shared by the upstream classifier and rate-limit state handling so a
+// 403 is not treated as an account failure based on status code alone.
 var openAI403BillingMarkers = []string{
 	"insufficient balance",
 	"insufficient_balance",
@@ -976,17 +979,6 @@ func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account
 		responseBody,
 		"account may be suspended or lack permissions",
 	)
-	decision, _ := classifyOpenAI403(account, http.StatusForbidden, upstreamMsg, responseBody)
-	if decision.Transition == AccountTransitionNone {
-		slog.Info(
-			"openai_403_account_state_skipped",
-			"account_id", account.ID,
-			"class", decision.Class,
-			"scope", decision.Scope,
-			"retry", decision.Retry,
-		)
-		return false
-	}
 
 	if s.openAI403CounterCache == nil {
 		s.handleAuthError(ctx, account, msg)
@@ -1023,15 +1015,6 @@ func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account
 		"threshold", openAI403DisableThreshold,
 	)
 	return true
-}
-
-func isOpenAITransientHTML403(account *Account, statusCode int, responseBody []byte) bool {
-	decision, matched := classifyOpenAI403(account, statusCode, "", responseBody)
-	return matched && decision.Class == "transient_html_forbidden"
-}
-
-func isOpenAI403BillingFailure(responseBody []byte, upstreamMsg string) bool {
-	return containsOpenAI403BillingMarker(upstreamMsg + "\n" + string(responseBody))
 }
 
 // handleAntigravity403 处理 Antigravity 平台的 403 错误
@@ -1936,31 +1919,6 @@ func (s *RateLimitService) ResetOpenAI403Counter(ctx context.Context, accountID 
 	if err := s.openAI403CounterCache.ResetOpenAI403Count(ctx, accountID); err != nil {
 		slog.Warn("openai_403_reset_failed", "account_id", accountID, "error", err)
 	}
-}
-
-// RecoverOpenAI403StateAfterSuccess clears only a cooldown created by the old
-// OpenAI 403 policy. Other temporary blocks and model limits remain untouched.
-func (s *RateLimitService) RecoverOpenAI403StateAfterSuccess(ctx context.Context, account *Account) {
-	if s == nil || account == nil || account.Platform != PlatformOpenAI {
-		return
-	}
-	s.ResetOpenAI403Counter(ctx, account.ID)
-
-	reason := strings.TrimSpace(account.TempUnschedulableReason)
-	if !strings.HasPrefix(reason, "OpenAI 403 temporary cooldown") || isOpenAI403BillingFailure(nil, reason) {
-		return
-	}
-	if err := s.accountRepo.ClearTempUnschedulable(ctx, account.ID); err != nil {
-		slog.Warn("openai_403_success_clear_temp_unschedulable_failed", "account_id", account.ID, "error", err)
-		return
-	}
-	if s.tempUnschedCache != nil {
-		if err := s.tempUnschedCache.DeleteTempUnsched(ctx, account.ID); err != nil {
-			slog.Warn("openai_403_success_cache_delete_failed", "account_id", account.ID, "error", err)
-		}
-	}
-	s.notifyAccountSchedulingBlockCleared(account.ID)
-	slog.Info("openai_403_state_recovered_after_success", "account_id", account.ID)
 }
 
 // RecoverAccountState 按需恢复账号的可恢复运行时状态。

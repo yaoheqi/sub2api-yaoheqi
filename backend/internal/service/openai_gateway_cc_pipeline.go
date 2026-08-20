@@ -103,8 +103,14 @@ func (s *OpenAIGatewayService) failoverOpenAIUpstreamHTTPError(
 	if !shouldFailover {
 		return nil
 	}
-	upstreamDetail := s.codexPrivacyUpstreamErrorDetail(account, respBody)
-	opsMessage := codexPrivacyUpstreamMessage(account, resp.StatusCode, upstreamMsg)
+	upstreamDetail := ""
+	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+		maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
+		if maxBytes <= 0 {
+			maxBytes = 2048
+		}
+		upstreamDetail = truncateString(string(respBody), maxBytes)
+	}
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 		Platform:           account.Platform,
 		AccountID:          account.ID,
@@ -112,7 +118,7 @@ func (s *OpenAIGatewayService) failoverOpenAIUpstreamHTTPError(
 		UpstreamStatusCode: resp.StatusCode,
 		UpstreamRequestID:  resp.Header.Get("x-request-id"),
 		Kind:               "failover",
-		Message:            opsMessage,
+		Message:            upstreamMsg,
 		Detail:             upstreamDetail,
 	})
 	shouldDisable := tempUnscheduled
@@ -122,8 +128,8 @@ func (s *OpenAIGatewayService) failoverOpenAIUpstreamHTTPError(
 	return newOpenAIUpstreamFailoverError(
 		resp.StatusCode,
 		resp.Header,
-		codexPrivacyUpstreamErrorBody(account, resp.StatusCode, respBody),
-		opsMessage,
+		respBody,
+		upstreamMsg,
 		!shouldDisable && account.IsPoolMode() && (account.IsPoolModeRetryableStatus(resp.StatusCode) || isOpenAITransientProcessingError(resp.StatusCode, upstreamMsg, respBody)),
 	)
 }

@@ -19,7 +19,6 @@ type Model struct {
 // DefaultModels OpenAI models list
 var DefaultModels = []Model{
 	{ID: "gpt-5.6-sol", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Sol"},
-	{ID: "gpt-5.6-sol-wm", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Sol WM"},
 	{ID: "gpt-5.6", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 (Sol)"},
 	{ID: "gpt-5.6-terra", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Terra"},
 	{ID: "gpt-5.6-luna", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Luna"},
@@ -34,14 +33,6 @@ var DefaultModels = []Model{
 	{ID: "gpt-image-2", Object: "model", Created: 1738368000, OwnedBy: "openai", Type: "model", DisplayName: "GPT Image 2"},
 }
 
-// CodexOAuthDefaultModels is the default model set for OpenAI Codex OAuth
-// accounts without an explicit model mapping.
-var CodexOAuthDefaultModels = []Model{
-	{ID: "gpt-5.6-sol", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Sol"},
-	{ID: "gpt-5.6-terra", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Terra"},
-	{ID: "gpt-5.5", Object: "model", Created: 1776873600, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.5"},
-}
-
 // DefaultModelIDs returns the default model ID list
 func DefaultModelIDs() []string {
 	ids := make([]string, len(DefaultModels))
@@ -52,7 +43,7 @@ func DefaultModelIDs() []string {
 }
 
 // DefaultTestModel default model for testing OpenAI accounts
-const DefaultTestModel = "gpt-5.5"
+const DefaultTestModel = "gpt-5.4"
 
 // CodexUsageProbeModel is the model used for OAuth Codex usage probes.
 const CodexUsageProbeModel = "codex-auto-review"

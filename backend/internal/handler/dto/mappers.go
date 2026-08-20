@@ -260,7 +260,6 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		CreatedAt:               a.CreatedAt,
 		UpdatedAt:               a.UpdatedAt,
 		Schedulable:             a.Schedulable,
-		SchedulingState:         schedulingStateForAccount(a),
 		RateLimitedAt:           a.RateLimitedAt,
 		RateLimitResetAt:        a.RateLimitResetAt,
 		OverloadUntil:           a.OverloadUntil,
@@ -401,14 +400,6 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 	}
 
 	return out
-}
-
-func schedulingStateForAccount(a *service.Account) *service.AccountSchedulingState {
-	if a == nil {
-		return nil
-	}
-	state := service.ProjectAccountSchedulingStateAt(a, time.Now(), nil)
-	return &state
 }
 
 func redactAccountManagedExtra(extra map[string]any) map[string]any {

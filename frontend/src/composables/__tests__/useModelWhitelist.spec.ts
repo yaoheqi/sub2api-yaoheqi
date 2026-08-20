@@ -4,18 +4,9 @@ vi.mock('@/api/admin/accounts', () => ({
   getAntigravityDefaultModelMapping: vi.fn()
 }))
 
-import {
-  buildModelMappingObject,
-  codexOAuthDefaultModels,
-  getModelsByPlatform,
-  splitModelMappingObject
-} from '../useModelWhitelist'
+import { buildModelMappingObject, getModelsByPlatform, splitModelMappingObject } from '../useModelWhitelist'
 
 describe('useModelWhitelist', () => {
-  it('Codex OAuth 默认模型严格限定为三个指定模型', () => {
-    expect(codexOAuthDefaultModels).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.5'])
-  })
-
   it('openai 模型列表包含 GPT-5.4 官方快照', () => {
     const models = getModelsByPlatform('openai')
 

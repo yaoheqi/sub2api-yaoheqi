@@ -559,9 +559,6 @@ func (s *OpenAIGatewayService) ForwardImages(
 	if parsed == nil {
 		return nil, fmt.Errorf("parsed images request is required")
 	}
-	if codexPrivacyEnabled(account) {
-		return nil, codexPrivacyCapabilityError("images")
-	}
 	switch account.Type {
 	case AccountTypeAPIKey:
 		return s.forwardOpenAIImagesAPIKey(ctx, c, account, body, parsed, channelMappedModel)
@@ -890,13 +887,6 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(resp *http
 	if err != nil {
 		return OpenAIUsage{}, 0, nil, err
 	}
-	if s.cfg != nil {
-		body = rewriteOpenAIImageResponseURLs(
-			body,
-			s.cfg.Gateway.ImageURLRewriteFrom,
-			s.cfg.Gateway.ImageURLRewriteTo,
-		)
-	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	contentType := "application/json"
 	if s.cfg != nil && !s.cfg.Security.ResponseHeaders.Enabled {
@@ -955,13 +945,6 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 	processLine := func(line []byte) {
 		if len(line) == 0 {
 			return
-		}
-		if s.cfg != nil {
-			line = rewriteOpenAIImageSSELine(
-				line,
-				s.cfg.Gateway.ImageURLRewriteFrom,
-				s.cfg.Gateway.ImageURLRewriteTo,
-			)
 		}
 		if firstTokenMs == nil {
 			ms := int(time.Since(startTime).Milliseconds())

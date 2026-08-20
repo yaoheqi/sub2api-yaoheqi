@@ -113,9 +113,6 @@ const (
 	openAIProbeCacheTTL = 10 * time.Minute
 	grokProbeRetryTTL   = 1 * time.Minute
 	grokFreeQuotaWindow = 24 * time.Hour
-	// Keep models/usage probes on the same canonical Codex revision as the
-	// privacy HTTP identity tuple. This value must not come from the client.
-	openAICodexProbeVersion = codexCLIVersion
 )
 
 // UsageCache 封装账户使用量相关的缓存
@@ -512,6 +509,13 @@ func (s *AccountUsageService) GetUsage(ctx context.Context, accountID int64, for
 	return s.getUsageForAccount(ctx, account, forceProbe)
 }
 
+// GetUsageForAccount 已加载账号的使用量直通入口（配额监控 fetcher 复用，
+// 避免缓存未命中时账号被加载两次——每次 GetByID 含 proxies/groups 联查）。
+func (s *AccountUsageService) GetUsageForAccount(ctx context.Context, account *Account, force ...bool) (*UsageInfo, error) {
+	forceProbe := len(force) > 0 && force[0]
+	return s.getUsageForAccount(ctx, account, forceProbe)
+}
+
 // GetUsageBatch 批量获取账号使用量。
 // Anthropic OAuth/SetupToken 统一走 passive 链路，其他账号复用现有主动查询逻辑。
 // 单个账号失败不会中断整批请求，错误会按账号返回。
@@ -797,9 +801,13 @@ func isOpenAICodexSnapshotStale(account *Account, now time.Time) bool {
 	if account == nil || !account.IsOpenAIOAuth() {
 		return false
 	}
-	// 普通 OAuth 账号和 Spark 影子账号都按 codex_usage_updated_at TTL 刷新。
-	// 普通账号的 HTTP probe 不依赖 WSv2；此前这里错误地把普通账号门控在
-	// WSv2 开关下，导致缓存过期后 5h/7d 和 overdraft 状态长期不更新。
+	// 普通账号的 codex 刷新走 probe(/responses 头),要求 WSv2;但 spark 影子走 QueryUsage
+	// (/wham/usage body 的 codex_bengalfox),与 WSv2 无关——不能用 WSv2 门控其 staleness,否则首刷后
+	// codex_5h/7d 已存在→staleness 恒 false→spark 窗口永久冻结(外审第9轮 P1)。影子改按
+	// codex_usage_updated_at TTL 判定;实际查询频率仍由 shouldProbeOpenAICodexSnapshot 的缓存 TTL 节流。
+	if !account.IsShadow() && !account.IsOpenAIResponsesWebSocketV2Enabled() {
+		return false
+	}
 	if account.Extra == nil {
 		return true
 	}
@@ -833,13 +841,6 @@ func (s *AccountUsageService) shouldProbeOpenAICodexSnapshot(accountID int64, no
 func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, account *Account) (map[string]any, error) {
 	if account == nil || !account.IsOAuth() {
 		return nil, nil
-	}
-	if codexPrivacyEnabled(account) {
-		// This administrative probe builds its own /responses request outside
-		// the gateway's request-scoped privacy snapshot. Real traffic still
-		// refreshes Codex usage from response headers; do not create a second,
-		// partially sanitized data path merely to refresh the dashboard early.
-		return nil, codexPrivacyCapabilityError("automatic Codex usage probes")
 	}
 	accessToken := ""
 	if !account.IsOpenAIAgentIdentity() {

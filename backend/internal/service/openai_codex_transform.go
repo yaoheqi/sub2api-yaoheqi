@@ -12,7 +12,6 @@ import (
 
 var codexModelMap = map[string]string{
 	"gpt-5.6-sol":          "gpt-5.6-sol",
-	"gpt-5.6-sol-wm":       "gpt-5.6-sol-wm",
 	"gpt-5.6-terra":        "gpt-5.6-terra",
 	"gpt-5.6-luna":         "gpt-5.6-luna",
 	"gpt-5.5":              "gpt-5.5",
@@ -60,7 +59,6 @@ var codexVersionModelPrefixes = []struct {
 	prefix string
 	target string
 }{
-	{prefix: "gpt-5.6-sol-wm", target: "gpt-5.6-sol-wm"},
 	{prefix: "gpt-5.6-sol", target: "gpt-5.6-sol"},
 	{prefix: "gpt-5.6-terra", target: "gpt-5.6-terra"},
 	{prefix: "gpt-5.6-luna", target: "gpt-5.6-luna"},
@@ -1278,23 +1276,19 @@ func ensureCodexReasoningInclude(reqBody map[string]any) bool {
 	}
 }
 
-// applyCodexClientMetadata 在请求体补齐 client_metadata["x-codex-installation-id"]。
-// openai_device_id 只作为 HMAC 输入，绝不把客户端/管理员原值写入出站 body。
+// applyCodexClientMetadata 在请求体补齐 client_metadata["x-codex-installation-id"]，
+// 取值为账号真实的 openai_device_id（最新 Codex 在请求体携带的安装标识）。
 //
 // 加法式、幂等：仅在账号存在 device_id 且该键缺失时注入，绝不覆盖既有 client_metadata
 // （如 turn metadata），也不伪造——无 device_id 时不写入。
-func applyCodexClientMetadata(reqBody map[string]any, account *Account, deploymentSecret ...string) bool {
+func applyCodexClientMetadata(reqBody map[string]any, account *Account) bool {
 	if account == nil {
 		return false
 	}
-	if strings.TrimSpace(account.GetOpenAIDeviceID()) == "" {
+	deviceID := strings.TrimSpace(account.GetOpenAIDeviceID())
+	if deviceID == "" {
 		return false
 	}
-	seed, ok := codexFingerprintSeed(account.Extra)
-	if !ok {
-		return false
-	}
-	deviceID := resolveConvergedInstallationID(account, seed, deploymentSecret...)
 	const key = "x-codex-installation-id"
 	switch existing := reqBody["client_metadata"].(type) {
 	case map[string]any:

@@ -90,48 +90,6 @@ func (s *adminServiceImpl) CreateProxy(ctx context.Context, input *CreateProxyIn
 	return proxy, nil
 }
 
-func (s *adminServiceImpl) BatchCreateProxies(ctx context.Context, inputs []CreateProxyInput) (int, int, error) {
-	batchRepo, ok := s.proxyRepo.(ProxyBatchRepository)
-	if !ok {
-		created := 0
-		for i := range inputs {
-			if _, err := s.CreateProxy(ctx, &inputs[i]); err == nil {
-				created++
-			}
-		}
-		return created, len(inputs) - created, nil
-	}
-
-	proxies := make([]Proxy, 0, len(inputs))
-	for i := range inputs {
-		input := &inputs[i]
-		mode := input.FallbackMode
-		if mode == "" {
-			mode = FallbackModeNone
-		}
-		if mode == FallbackModeProxy && input.BackupProxyID == nil {
-			return 0, 0, infraerrors.BadRequest("PROXY_BACKUP_REQUIRED", "backup proxy required when fallback_mode=proxy")
-		}
-		if input.ExpiryWarnDays < 0 {
-			return 0, 0, infraerrors.BadRequest("PROXY_WARN_DAYS_INVALID", "expiry_warn_days must be >= 0")
-		}
-		proxies = append(proxies, Proxy{
-			Name: input.Name, Protocol: input.Protocol, Host: input.Host, Port: input.Port,
-			Username: input.Username, Password: input.Password, Status: StatusActive,
-			FallbackMode: mode, ExpiryWarnDays: input.ExpiryWarnDays,
-		})
-	}
-	createdProxies, err := batchRepo.CreateBatchMissing(ctx, proxies)
-	if err != nil {
-		return 0, 0, err
-	}
-	for i := range createdProxies {
-		proxy := createdProxies[i]
-		go s.probeProxyLatency(context.Background(), &proxy)
-	}
-	return len(createdProxies), len(inputs) - len(createdProxies), nil
-}
-
 func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *UpdateProxyInput) (*Proxy, error) {
 	// 校验：backup_proxy_id 不能是自身
 	if input.BackupProxyID != nil && *input.BackupProxyID == id {
@@ -202,17 +160,6 @@ func (s *adminServiceImpl) DeleteProxy(ctx context.Context, id int64) error {
 func (s *adminServiceImpl) BatchDeleteProxies(ctx context.Context, ids []int64) (*ProxyBatchDeleteResult, error) {
 	result := &ProxyBatchDeleteResult{}
 	if len(ids) == 0 {
-		return result, nil
-	}
-	if batchRepo, ok := s.proxyRepo.(ProxyBatchRepository); ok {
-		deletedIDs, blockedIDs, err := batchRepo.DeleteUnusedBatch(ctx, ids)
-		if err != nil {
-			return nil, err
-		}
-		result.DeletedIDs = deletedIDs
-		for _, id := range blockedIDs {
-			result.Skipped = append(result.Skipped, ProxyBatchDeleteSkipped{ID: id, Reason: ErrProxyInUse.Error()})
-		}
 		return result, nil
 	}
 

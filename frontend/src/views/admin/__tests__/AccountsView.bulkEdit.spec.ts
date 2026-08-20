@@ -400,7 +400,7 @@ describe('admin AccountsView bulk edit scope', () => {
     expect(probeUpstreamBillingBatch).toHaveBeenCalledWith([7, 11])
   })
 
-  it('patches the current row after a batch probe without refreshing the list', async () => {
+  it('refreshes the current page after a batch probe and displays the synced rate', async () => {
     const account = (id: number, rateMultiplier: number) => ({
       id,
       name: `account-${id}`,
@@ -471,11 +471,12 @@ describe('admin AccountsView bulk edit scope', () => {
     await flushPromises()
 
     expect(probeUpstreamBillingBatch).toHaveBeenCalledWith([11])
-    expect(listAccounts).toHaveBeenCalledTimes(2)
+    expect(listAccounts).toHaveBeenCalledTimes(3)
+    expect(listAccounts.mock.calls[2]?.[0]).toBe(2)
     expect(wrapper.get('[data-test="account-rate"]').text()).toBe('0.065x')
   })
 
-  it('does not request a list refresh after a successful batch probe', async () => {
+  it('does not report a successful batch probe as failed when the list refresh fails', async () => {
     const account = {
       id: 7,
       name: 'account-7',
@@ -545,11 +546,10 @@ describe('admin AccountsView bulk edit scope', () => {
 
     expect(showError).not.toHaveBeenCalled()
     expect(showSuccess).toHaveBeenCalledWith('admin.accounts.upstreamBilling.batchCompleted')
-    expect(listAccounts).toHaveBeenCalledTimes(1)
     consoleError.mockRestore()
   })
 
-  it('patches the account row after a successful single-account probe without refreshing the list', async () => {
+  it('refreshes the account row after a successful single-account probe', async () => {
     const account = (rateMultiplier: number) => ({
       id: 7,
       name: 'account-7',
@@ -615,7 +615,7 @@ describe('admin AccountsView bulk edit scope', () => {
     await flushPromises()
 
     expect(probeUpstreamBilling).toHaveBeenCalledWith(7)
-    expect(listAccounts).toHaveBeenCalledTimes(1)
+    expect(listAccounts).toHaveBeenCalledTimes(2)
     expect(wrapper.get('[data-test="account-rate"]').text()).toBe('0.065x')
   })
 })

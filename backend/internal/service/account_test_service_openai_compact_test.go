@@ -22,8 +22,8 @@ const compactProbeSSESuccessBody = "data: {\"type\":\"response.output_item.done\
 
 func TestAccountTestService_TestAccountConnection_OpenAICompactOAuthSuccessPersistsSupport(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	updateCalls := make(chan map[string]any, 1)
 
+	updateCalls := make(chan map[string]any, 1)
 	account := Account{
 		ID:          1,
 		Name:        "openai-oauth",
@@ -37,7 +37,6 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactOAuthSuccessPersi
 			"chatgpt_account_id":         "chatgpt-acc",
 			"chatgpt_account_is_fedramp": true,
 		},
-		Extra: map[string]any{codexFingerprintModeExtraKey: "off"},
 	}
 	repo := &snapshotUpdateAccountRepo{
 		stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{account}},
@@ -100,7 +99,6 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactOAuth404MarksUnsu
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
 		},
-		Extra: map[string]any{codexFingerprintModeExtraKey: "off"},
 	}
 	repo := &snapshotUpdateAccountRepo{
 		stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{account}},
@@ -123,13 +121,9 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactOAuth404MarksUnsu
 	err := svc.TestAccountConnection(c, account.ID, "gpt-5.4", "", AccountTestModeCompact)
 	require.Error(t, err)
 
-	select {
-	case updates := <-updateCalls:
-		require.Equal(t, false, updates["openai_compact_supported"])
-		require.Equal(t, http.StatusNotFound, updates["openai_compact_last_status"])
-	default:
-		// The probe result is already asserted above; persistence is asynchronous.
-	}
+	updates := <-updateCalls
+	require.Equal(t, false, updates["openai_compact_supported"])
+	require.Equal(t, http.StatusNotFound, updates["openai_compact_last_status"])
 	require.Contains(t, rec.Body.String(), `"type":"error"`)
 }
 
@@ -241,7 +235,6 @@ func TestAccountTestService_TestAccountConnection_OpenAICompact2xxWithoutItemMar
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
 		},
-		Extra: map[string]any{codexFingerprintModeExtraKey: "off"},
 	}
 	repo := &snapshotUpdateAccountRepo{
 		stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{account}},
@@ -268,11 +261,8 @@ func TestAccountTestService_TestAccountConnection_OpenAICompact2xxWithoutItemMar
 	err := svc.TestAccountConnection(c, account.ID, "gpt-5.4", "", AccountTestModeCompact)
 	require.Error(t, err)
 
-	select {
-	case updates := <-updateCalls:
-		require.Equal(t, false, updates["openai_compact_supported"])
-	default:
-	}
+	updates := <-updateCalls
+	require.Equal(t, false, updates["openai_compact_supported"])
 	require.Contains(t, rec.Body.String(), `"type":"error"`)
 }
 
@@ -281,6 +271,7 @@ func TestAccountTestService_TestAccountConnection_OpenAICompact2xxWithoutItemMar
 func TestAccountTestService_TestAccountConnection_OpenAICompactProbeIdentityMatchesRealTraffic(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
+	updateCalls := make(chan map[string]any, 1)
 	account := Account{
 		ID:          6,
 		Name:        "openai-oauth-identity",
@@ -301,7 +292,7 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactProbeIdentityMatc
 	}
 	repo := &snapshotUpdateAccountRepo{
 		stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{account}},
-		updateExtraCalls:      make(chan map[string]any, 1),
+		updateExtraCalls:      updateCalls,
 	}
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
@@ -314,27 +305,27 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactProbeIdentityMatc
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/6/test", bytes.NewReader(nil))
 
-	err := svc.TestAccountConnection(c, account.ID, "gpt-5.4", "", AccountTestModeCompact)
-	require.Error(t, err, "隐私账号的裸 admin probe 必须 fail closed")
-	require.Nil(t, upstream.lastReq, "被拒绝的 probe 不得触达上游")
+	require.NoError(t, svc.TestAccountConnection(c, account.ID, "gpt-5.4", "", AccountTestModeCompact))
+
+	// 显式 session 收敛模式：出站身份 = 账号级收敛值
+	seed, ok := codexFingerprintSeed(account.Extra)
+	require.True(t, ok)
+	converged := resolveConvergedSessionID(seed)
+	require.Equal(t, converged, upstream.lastReq.Header.Get("session-id"))
+	require.Equal(t, converged, upstream.lastReq.Header.Get("session_id"))
+	require.Equal(t, resolveConvergedInstallationID(&account, seed), upstream.lastReq.Header.Get("x-codex-installation-id"),
+		"真实 Codex 每个请求必带 installation-id，探测不得缺失")
+	require.NotContains(t, upstream.lastReq.Header.Get("session-id"), "probe_compact",
+		"探测标识不得是可被上游一眼识别的字面量")
+	<-updateCalls
 }
 
 func TestCompactProbeSessionID_IsUUIDShaped(t *testing.T) {
 	for _, id := range []int64{0, 1, 987654} {
-		got := compactProbeOAuthSessionID(id)
-		parsed, err := uuid.Parse(got)
-		require.NoError(t, err, "探测会话标识必须是 UUID 形态: %s", got)
-		require.Equal(t, uuid.Version(7), parsed.Version(), "探测会话标识必须使用 UUIDv7")
-	}
-	require.Equal(t, compactProbeOAuthSessionID(7), compactProbeOAuthSessionID(7), "同账号应稳定复用同一会话")
-	require.NotEqual(t, compactProbeOAuthSessionID(7), compactProbeOAuthSessionID(8))
-}
-
-func TestCompactProbeSessionID_NonOAuthKeepsLegacyUUIDv4(t *testing.T) {
-	for _, id := range []int64{0, 1, 987654} {
 		got := compactProbeSessionID(id)
-		parsed, err := uuid.Parse(got)
-		require.NoError(t, err)
-		require.Equal(t, uuid.Version(4), parsed.Version())
+		_, err := uuid.Parse(got)
+		require.NoError(t, err, "探测会话标识必须是 UUID 形态: %s", got)
 	}
+	require.Equal(t, compactProbeSessionID(7), compactProbeSessionID(7), "同账号应稳定复用同一会话")
+	require.NotEqual(t, compactProbeSessionID(7), compactProbeSessionID(8))
 }

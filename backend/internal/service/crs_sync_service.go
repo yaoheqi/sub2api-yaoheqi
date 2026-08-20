@@ -660,15 +660,6 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 			credentials = mergeMap(existing.Credentials, credentials)
 		}
 		reconcileCRSUpstreamBillingProbeExtra(existing, PlatformOpenAI, AccountTypeOAuth, credentials, extra)
-		// CRS imports bypass AccountService/AdminService, so apply the same
-		// lifecycle normalization here. New OAuth accounts must persist the
-		// canonical session policy and a managed seed; updates preserve the
-		// existing seed or create one when the account is privacy-enabled.
-		if existing == nil {
-			extra = prepareCodexFingerprintExtraForCreate(PlatformOpenAI, AccountTypeOAuth, extra)
-		} else {
-			extra = prepareCodexFingerprintExtraForUpdate(existing, extra)
-		}
 
 		if existing == nil {
 			if !shouldCreateAccount(src.ID, selectedSet) {

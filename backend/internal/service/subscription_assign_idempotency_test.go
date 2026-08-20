@@ -275,66 +275,6 @@ func (s *subscriptionUserSubRepoStub) Update(_ context.Context, sub *UserSubscri
 	return nil
 }
 
-type subscriptionBatchRepoStub struct {
-	*subscriptionUserSubRepoStub
-	batchGetCalls    int
-	batchCreateCalls int
-	batchRenewCalls  int
-}
-
-func (s *subscriptionBatchRepoStub) GetByUserIDsAndGroupID(_ context.Context, userIDs []int64, groupID int64) ([]UserSubscription, error) {
-	s.batchGetCalls++
-	out := make([]UserSubscription, 0, len(userIDs))
-	for _, userID := range userIDs {
-		if sub := s.byUserGroup[s.key(userID, groupID)]; sub != nil {
-			out = append(out, *sub)
-		}
-	}
-	return out, nil
-}
-
-func (s *subscriptionBatchRepoStub) CreateBatchForExistingUsers(ctx context.Context, subscriptions []UserSubscription) ([]int64, []int64, error) {
-	s.batchCreateCalls++
-	created := make([]int64, 0, len(subscriptions))
-	for i := range subscriptions {
-		if err := s.Create(ctx, &subscriptions[i]); err != nil {
-			return nil, nil, err
-		}
-		created = append(created, subscriptions[i].UserID)
-	}
-	return created, nil, nil
-}
-
-func (s *subscriptionBatchRepoStub) RenewBatch(ctx context.Context, subscriptions []UserSubscription) error {
-	s.batchRenewCalls++
-	for i := range subscriptions {
-		if err := s.Update(ctx, &subscriptions[i]); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func TestBulkAssignSubscriptionUsesBatchRepository(t *testing.T) {
-	base := newSubscriptionUserSubRepoStub()
-	now := time.Now()
-	activeStart := now.Add(-time.Hour)
-	base.seed(&UserSubscription{ID: 31, UserID: 1, GroupID: 1, StartsAt: activeStart, ExpiresAt: activeStart.AddDate(0, 0, 30), Status: SubscriptionStatusActive, Notes: "bulk"})
-	base.seed(&UserSubscription{ID: 32, UserID: 2, GroupID: 1, StartsAt: now.AddDate(0, 0, -31), ExpiresAt: now.Add(-time.Hour), Status: SubscriptionStatusExpired, Notes: "bulk"})
-	repo := &subscriptionBatchRepoStub{subscriptionUserSubRepoStub: base}
-	svc := NewSubscriptionService(&subscriptionGroupRepoStub{group: &Group{ID: 1, SubscriptionType: SubscriptionTypeSubscription}}, repo, nil, nil, nil)
-
-	result, err := svc.BulkAssignSubscription(context.Background(), &BulkAssignSubscriptionInput{UserIDs: []int64{1, 2, 3}, GroupID: 1, ValidityDays: 30, Notes: "bulk"})
-	require.NoError(t, err)
-	require.Equal(t, 3, result.SuccessCount)
-	require.Equal(t, 1, result.CreatedCount)
-	require.Equal(t, 2, result.ReusedCount)
-	require.Equal(t, "created", result.Statuses[3])
-	require.Equal(t, 2, repo.batchGetCalls)
-	require.Equal(t, 1, repo.batchCreateCalls)
-	require.Equal(t, 1, repo.batchRenewCalls)
-}
-
 func TestAssignSubscriptionReuseWhenSemanticsMatch(t *testing.T) {
 	start := time.Now().Add(-time.Hour)
 	groupRepo := &subscriptionGroupRepoStub{

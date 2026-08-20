@@ -13,6 +13,39 @@ import (
 	entsql "entgo.io/ent/dialect/sql"
 )
 
+// ClaimCodexQuotaOverdraftProbe atomically reserves one quota cycle. A cycle is
+// claimed at most once across all sub2api replicas.
+func (r *accountRepository) ClaimCodexQuotaOverdraftProbe(
+	ctx context.Context,
+	id int64,
+	state *service.CodexQuotaOverdraftProbeState,
+) (bool, error) {
+	if state == nil || strings.TrimSpace(state.CycleKey) == "" {
+		return false, nil
+	}
+	payload, err := json.Marshal(state)
+	if err != nil {
+		return false, err
+	}
+	result, err := r.sql.ExecContext(ctx, `
+		UPDATE accounts
+		SET extra = COALESCE(extra, '{}'::jsonb) || jsonb_build_object($1::text, $2::jsonb),
+			updated_at = NOW()
+		WHERE id = $3
+			AND deleted_at IS NULL
+			AND COALESCE(extra #>> '{codex_quota_overdraft_probe,cycle_key}', '') <> $4
+	`, service.CodexQuotaOverdraftProbeExtraKey, string(payload), id, state.CycleKey)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return false, err
+	}
+	r.syncSchedulerAccountSnapshot(ctx, id)
+	return true, nil
+}
+
 // PersistCodexQuotaOverdraftProbeUnlessFailed stores a non-failure result while
 // preserving a terminal failure already confirmed for the same quota cycle.
 func (r *accountRepository) PersistCodexQuotaOverdraftProbeUnlessFailed(

@@ -349,13 +349,30 @@ func (h *ProxyHandler) BatchCreate(c *gin.Context) {
 		return
 	}
 
-	inputs := make([]service.CreateProxyInput, 0, len(req.Proxies))
+	created := 0
+	skipped := 0
+
 	for _, item := range req.Proxies {
+		// Trim all string fields
 		host := strings.TrimSpace(item.Host)
 		protocol := strings.TrimSpace(item.Protocol)
 		username := strings.TrimSpace(item.Username)
 		password := strings.TrimSpace(item.Password)
-		inputs = append(inputs, service.CreateProxyInput{
+
+		// Check for duplicates (same host, port, username, password)
+		exists, err := h.adminService.CheckProxyExists(c.Request.Context(), host, item.Port, username, password)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+
+		if exists {
+			skipped++
+			continue
+		}
+
+		// Create proxy with default name
+		_, err = h.adminService.CreateProxy(c.Request.Context(), &service.CreateProxyInput{
 			Name:     "default",
 			Protocol: protocol,
 			Host:     host,
@@ -363,48 +380,17 @@ func (h *ProxyHandler) BatchCreate(c *gin.Context) {
 			Username: username,
 			Password: password,
 		})
-	}
-	batcher, ok := h.adminService.(interface {
-		BatchCreateProxies(context.Context, []service.CreateProxyInput) (int, int, error)
-	})
-	if !ok {
-		created := 0
-		skipped := 0
-		for i := range inputs {
-			input := &inputs[i]
-			exists, err := h.adminService.CheckProxyExists(
-				c.Request.Context(), input.Host, input.Port, input.Username, input.Password,
-			)
-			if err != nil {
-				response.ErrorFrom(c, err)
-				return
-			}
-			if exists {
-				skipped++
-				continue
-			}
-			if _, err := h.adminService.CreateProxy(c.Request.Context(), input); err != nil {
-				skipped++
-				continue
-			}
-			created++
+		if err != nil {
+			// If creation fails due to duplicate, count as skipped
+			skipped++
+			continue
 		}
-		response.Success(c, gin.H{
-			"created": created,
-			"skipped": skipped,
-			"total":   len(req.Proxies),
-		})
-		return
-	}
-	created, skipped, err := batcher.BatchCreateProxies(c.Request.Context(), inputs)
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
+
+		created++
 	}
 
 	response.Success(c, gin.H{
 		"created": created,
 		"skipped": skipped,
-		"total":   len(req.Proxies),
 	})
 }

@@ -134,6 +134,7 @@ func TestOpenAIResponsesRequestPathSuffixRejectsNonConformingSubpaths(t *testing
 	for path, want := range map[string]string{
 		"/v1/responses":                        "",
 		"/v1/responses/compact":                "/compact",
+		"/v1/responses/input_tokens":           "/input_tokens",
 		"/responses/compact/":                  "/compact",
 		"/backend-api/codex/responses/compact": "/compact",
 	} {
@@ -143,6 +144,15 @@ func TestOpenAIResponsesRequestPathSuffixRejectsNonConformingSubpaths(t *testing
 			require.Equal(t, want, openAIResponsesRequestPathSuffix(c))
 		})
 	}
+}
+
+func TestIsOpenAIResponsesInputTokensRequestPath(t *testing.T) {
+	for _, path := range []string{"/v1/responses/input_tokens", "/responses/input_tokens", "/backend-api/codex/responses/input_tokens"} {
+		c := newResponsesSuffixTestContext(t, path)
+		require.True(t, IsOpenAIResponsesInputTokensRequestPath(c), "path=%s", path)
+	}
+	c := newResponsesSuffixTestContext(t, "/v1/responses/compact")
+	require.False(t, IsOpenAIResponsesInputTokensRequestPath(c))
 }
 
 func TestIsOpenAIResponsesCompactPathUsesLegacyEndpointShape(t *testing.T) {
@@ -178,23 +188,6 @@ func TestAppendOpenAIResponsesRequestPathSuffixRefusesUnsafeSuffix(t *testing.T)
 	require.Equal(t, chatgptCodexURL, appendOpenAIResponsesRequestPathSuffix(chatgptCodexURL, "/../../x"))
 	require.Equal(t, chatgptCodexURL, appendOpenAIResponsesRequestPathSuffix(chatgptCodexURL, "/?a=b"))
 	require.Equal(t, chatgptCodexURL+"/compact", appendOpenAIResponsesRequestPathSuffix(chatgptCodexURL, "/compact"))
-}
-
-func TestCodexPrivacyResponsesPathAllowsOnlyExactEndpoints(t *testing.T) {
-	for path, want := range map[string]bool{
-		"/v1/responses":                      true,
-		"/v1/responses/compact":              true,
-		"/v1/responses/compact/attacker_tag": false,
-		"/v1/responses/resp_123/cancel":      false,
-		"/v1/responses/compact%2f..":         false,
-		"/v1/responses/%2e%2e/%2e%2e/x":      false,
-		"/v1/responses/..%2f..%2fx":          false,
-	} {
-		t.Run(path, func(t *testing.T) {
-			c := newResponsesSuffixTestContext(t, path)
-			require.Equal(t, want, IsCodexPrivacyResponsesRequestPathAllowed(c))
-		})
-	}
 }
 
 func newResponsesSuffixTestContext(t *testing.T, path string) *gin.Context {

@@ -136,31 +136,22 @@ func TestOpenAIGatewayServiceForward_CodexImageInjectionRespectsGroupCapability(
 	}
 }
 
-func TestOpenAIBuildUpstreamRequestOpenAIPassthroughDropsResponsesLiteHeaderForPrivacy(t *testing.T) {
+func TestOpenAIBuildUpstreamRequestOpenAIPassthroughForwardsResponsesLiteHeader(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.98.0")
 	c.Request.Header.Set(responsesLiteHeader, "true")
 
 	svc := newOpenAIImageGenerationControlTestService(&httpUpstreamRecorder{})
-	account := &Account{
-		ID:       5152,
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeOAuth,
-		Credentials: map[string]any{
-			"chatgpt_account_id": "chatgpt-account",
-		},
-		Extra: map[string]any{codexFingerprintModeExtraKey: "session"},
-	}
 	req, err := svc.buildUpstreamRequestOpenAIPassthrough(
 		c.Request.Context(),
 		c,
-		account,
+		newOpenAIImageGenerationControlTestAccount(),
 		[]byte(`{"model":"gpt-5.4","input":"write code"}`),
 		"test-token",
 	)
 
 	require.NoError(t, err)
-	require.Empty(t, req.Header.Get(responsesLiteHeader))
+	require.Equal(t, "true", req.Header.Get(responsesLiteHeader))
 }
 
 func TestOpenAIGatewayServiceForward_ExplicitImageToolWorksWithBridgeDisabled(t *testing.T) {
@@ -705,9 +696,7 @@ func TestHandleStreamingResponse_CyberPolicyCapturesRealUpstreamTokens(t *testin
 }
 
 func newOpenAIImageGenerationControlTestService(upstream *httpUpstreamRecorder) *OpenAIGatewayService {
-	cfg := &config.Config{Gateway: config.GatewayConfig{
-		CodexFingerprintSecret: testCodexDeploymentSecret,
-	}}
+	cfg := &config.Config{}
 	return &OpenAIGatewayService{
 		cfg:              cfg,
 		httpUpstream:     upstream,

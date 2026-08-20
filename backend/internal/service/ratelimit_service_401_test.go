@@ -17,7 +17,6 @@ type rateLimitAccountRepoStub struct {
 	mockAccountRepoForGemini
 	setErrorCalls          int
 	tempCalls              int
-	clearTempCalls         int
 	updateCredentialsCalls int
 	updateExtraCalls       int
 	lastCredentials        map[string]any
@@ -42,11 +41,6 @@ func (r *rateLimitAccountRepoStub) SetTempUnschedulable(ctx context.Context, id 
 	return nil
 }
 
-func (r *rateLimitAccountRepoStub) ClearTempUnschedulable(context.Context, int64) error {
-	r.clearTempCalls++
-	return nil
-}
-
 func (r *rateLimitAccountRepoStub) UpdateCredentials(ctx context.Context, id int64, credentials map[string]any) error {
 	r.updateCredentialsCalls++
 	r.lastCredentials = shallowCopyMap(credentials)
@@ -65,14 +59,12 @@ type tokenCacheInvalidatorRecorder struct {
 }
 
 type openAI403CounterCacheStub struct {
-	counts         []int64
-	incrementCalls int
-	resetCalls     []int64
-	err            error
+	counts     []int64
+	resetCalls []int64
+	err        error
 }
 
 func (s *openAI403CounterCacheStub) IncrementOpenAI403Count(_ context.Context, _ int64, _ int) (int64, error) {
-	s.incrementCalls++
 	if s.err != nil {
 		return 0, s.err
 	}

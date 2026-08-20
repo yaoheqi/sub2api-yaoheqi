@@ -1087,50 +1087,21 @@ func (r *affiliateRepository) BatchSetUserRebateRate(ctx context.Context, userID
 		return nil
 	}
 	return r.withTx(ctx, func(txCtx context.Context, txClient *dbent.Client) error {
-		cleanIDs := make([]int64, 0, len(userIDs))
-		codes := make([]string, 0, len(userIDs))
-		seen := make(map[int64]struct{}, len(userIDs))
 		for _, uid := range userIDs {
 			if uid <= 0 {
 				continue
 			}
-			if _, exists := seen[uid]; exists {
-				continue
-			}
-			seen[uid] = struct{}{}
-			code, err := generateAffiliateCode()
-			if err != nil {
+			if _, err := ensureUserAffiliateWithClient(txCtx, txClient, uid); err != nil {
 				return err
 			}
-			cleanIDs = append(cleanIDs, uid)
-			codes = append(codes, code)
 		}
-		if len(cleanIDs) == 0 {
-			return nil
-		}
-		if _, err := txClient.ExecContext(txCtx, `
-			INSERT INTO user_affiliates (user_id, aff_code, created_at, updated_at)
-			SELECT data.user_id, data.aff_code, NOW(), NOW()
-			FROM unnest($1::bigint[], $2::text[]) AS data(user_id, aff_code)
-			JOIN users ON users.id = data.user_id AND users.deleted_at IS NULL
-			ON CONFLICT DO NOTHING
-		`, pq.Array(cleanIDs), pq.Array(codes)); err != nil {
-			return fmt.Errorf("batch initialize affiliate profiles: %w", err)
-		}
-		result, err := txClient.ExecContext(txCtx, `
+		_, err := txClient.ExecContext(txCtx, `
 UPDATE user_affiliates
 SET aff_rebate_rate_percent = $1,
     updated_at = NOW()
 WHERE user_id = ANY($2)`, nullableArg(ratePercent), pq.Array(userIDs))
 		if err != nil {
 			return fmt.Errorf("batch set aff_rebate_rate_percent: %w", err)
-		}
-		affected, err := result.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if affected != int64(len(cleanIDs)) {
-			return service.ErrUserNotFound
 		}
 		return nil
 	})

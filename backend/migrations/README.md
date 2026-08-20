@@ -34,18 +34,17 @@ Example: `017_add_gemini_tier_id.sql`
 
 ## Migration File Structure
 
-This project uses a custom migration runner (`internal/repository/migrations_runner.go`).
+This project uses a custom migration runner (`internal/repository/migrations_runner.go`) that executes the full SQL file content as-is.
 
 - Regular migrations (`*.sql`): executed in a transaction.
 - Non-transactional migrations (`*_notx.sql`): split by statement and executed without transaction (for `CONCURRENTLY`).
-- Three historical Goose-formatted migrations are supported for fresh installs by executing only their `Up` sections. New migrations must remain forward-only and must not add Goose markers.
 
 ```sql
 -- Forward-only migration (recommended)
 ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS example_column VARCHAR(100);
 ```
 
-> ⚠️ Do **not** place executable "Down" SQL or Goose markers in new files. CI permits only the three explicitly allowlisted legacy migrations; rollback changes must use a new forward migration.
+> ⚠️ Do **not** place executable "Down" SQL in the same file. The runner does not parse goose Up/Down sections and will execute all SQL statements in the file.
 
 ## Important Rules
 

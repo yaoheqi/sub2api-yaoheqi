@@ -13,7 +13,7 @@
     </div>
 
     <!-- Stats data -->
-    <div v-else-if="props.stats" class="grid min-w-[10rem] grid-cols-2 gap-x-2 gap-y-0 text-[11px] leading-4">
+    <div v-else-if="props.stats" class="space-y-0.5 text-xs">
       <!-- Requests -->
       <div class="flex items-center gap-1">
         <span class="text-gray-500 dark:text-gray-400"

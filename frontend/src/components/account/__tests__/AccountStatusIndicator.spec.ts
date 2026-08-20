@@ -51,16 +51,6 @@ function makeAccount(overrides: Partial<Account>): Account {
 }
 
 describe('AccountStatusIndicator', () => {
-  it('uses the filter status label for manually unschedulable accounts', () => {
-    const wrapper = mount(AccountStatusIndicator, {
-      props: { account: makeAccount({ schedulable: false }) },
-      global: { stubs: { Icon: true } }
-    })
-
-    expect(wrapper.text()).toContain('admin.accounts.status.unschedulable')
-    expect(wrapper.text()).not.toContain('admin.accounts.status.paused')
-  })
-
   it('Claude 5 模型限流时显示 Opus 和 Sonnet 的短别名', () => {
     const wrapper = mount(AccountStatusIndicator, {
       props: {

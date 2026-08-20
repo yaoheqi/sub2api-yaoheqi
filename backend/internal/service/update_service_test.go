@@ -171,6 +171,26 @@ func TestCompareVersionsSupportsForkPrereleaseRevisions(t *testing.T) {
 	require.Greater(t, compareVersions("0.1.177-overdraft.1", "0.1.176-overdraft.9"), 0)
 }
 
+func TestUpdateServiceCustomBuildIgnoresSameBaseFlavorRevision(t *testing.T) {
+	client := &updateServiceGitHubClientStub{release: &GitHubRelease{TagName: "v0.1.179-overdraft.1"}}
+	svc := NewUpdateService(&updateServiceCacheStub{}, client, "0.1.179-custom", "release")
+
+	info, err := svc.CheckUpdate(context.Background(), true)
+
+	require.NoError(t, err)
+	require.False(t, info.HasUpdate)
+}
+
+func TestUpdateServiceCustomBuildDetectsNewBaseVersion(t *testing.T) {
+	client := &updateServiceGitHubClientStub{release: &GitHubRelease{TagName: "v0.1.180-overdraft.1"}}
+	svc := NewUpdateService(&updateServiceCacheStub{}, client, "0.1.179-custom", "release")
+
+	info, err := svc.CheckUpdate(context.Background(), true)
+
+	require.NoError(t, err)
+	require.True(t, info.HasUpdate)
+}
+
 func newRollbackTestService(current string, releases []*GitHubRelease) *UpdateService {
 	return NewUpdateService(
 		&updateServiceCacheStub{},

@@ -484,6 +484,21 @@ func (s *UpdateService) isSourceBuild() bool {
 // cadence. Flavor/revision suffixes (custom, overdraft, LeoYan) identify a
 // local build and must not advertise each other as upgrades.
 func (s *UpdateService) hasUpdate(latestVersion string) bool {
+	// Custom images are rebuilt from the same upstream base version but use a
+	// local flavor suffix (for example 0.1.179-custom). SemVer orders that
+	// suffix below 0.1.179-overdraft.1, which would create a false upgrade
+	// prompt on every custom deployment. For custom builds, compare the stable
+	// numeric base and ignore same-base flavor revisions.
+	if isCustomVersion(s.currentVersion) {
+		current := parseVersion(s.currentVersion)
+		latest := parseVersion(latestVersion)
+		for i := 0; i < len(current); i++ {
+			if current[i] != latest[i] {
+				return current[i] < latest[i]
+			}
+		}
+		return false
+	}
 	if !s.isSourceBuild() {
 		return compareVersions(s.currentVersion, latestVersion) < 0
 	}
@@ -493,6 +508,15 @@ func (s *UpdateService) hasUpdate(latestVersion string) bool {
 		if current[i] != latest[i] {
 			return current[i] < latest[i]
 		}
+	}
+	return false
+}
+
+func isCustomVersion(version string) bool {
+	version = strings.ToLower(strings.TrimSpace(version))
+	if base, suffix, found := strings.Cut(version, "-"); found {
+		_ = base
+		return strings.HasPrefix(suffix, "custom")
 	}
 	return false
 }

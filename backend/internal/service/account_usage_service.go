@@ -773,6 +773,11 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 		usage.SevenDay.WindowStats = windowStatsFromAccountStats(stats)
 	}
 
+	// Attach usage accumulated during an active quota-overdraft cycle to each
+	// corresponding 5h/7d window. This is intentionally done after the normal
+	// window stats are loaded so the UI can show both figures independently.
+	applyCodexQuotaOverdraftUsage(ctx, s.usageLogRepo, account, usage, now)
+
 	return usage, nil
 }
 

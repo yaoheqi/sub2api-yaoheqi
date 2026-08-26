@@ -146,6 +146,10 @@
               label="5h"
               :utilization="usageInfo.five_hour.utilization"
               :resets-at="usageInfo.five_hour.resets_at"
+              :overdraft-active="usageInfo.five_hour.overdraft_active"
+              :overdraft-stats="usageInfo.five_hour.overdraft_stats"
+              :overdraft-started-at="usageInfo.five_hour.overdraft_started_at"
+              :overdraft-recover-at="usageInfo.five_hour.overdraft_recover_at"
               :show-now-when-idle="true"
               color="indigo"
             />
@@ -155,6 +159,10 @@
               label="7d"
               :utilization="usageInfo.seven_day.utilization"
               :resets-at="usageInfo.seven_day.resets_at"
+              :overdraft-active="usageInfo.seven_day.overdraft_active"
+              :overdraft-stats="usageInfo.seven_day.overdraft_stats"
+              :overdraft-started-at="usageInfo.seven_day.overdraft_started_at"
+              :overdraft-recover-at="usageInfo.seven_day.overdraft_recover_at"
               :show-now-when-idle="true"
               color="emerald"
             />

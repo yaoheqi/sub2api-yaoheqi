@@ -19,6 +19,7 @@ const (
 	openAIStopSchedulingBridgeCooldown    = 2 * time.Minute
 	openAIOAuth429StormWindow             = 10 * time.Second
 	openAIOAuth429StormMaxAccountSwitches = 1
+	openAIAPIKey503TempCooldown           = 30 * time.Second
 )
 
 // OpenAIOAuth429FailoverState tracks the request-local follow-up budget after
@@ -136,6 +137,24 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	if s == nil || account == nil {
 		return false
 	}
+	// A third-party OpenAI API key returning a generic 503 is temporarily
+	// removed from scheduling immediately. Pool-mode accounts retain their
+	// bounded same-account retry path and are handled by the pool breaker.
+	if account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey &&
+		!account.IsPoolMode() && statusCode == http.StatusServiceUnavailable &&
+		isOpenAIAPIKeyTemporaryUnavailableBody(responseBody) &&
+		s.rateLimitService != nil && s.rateLimitService.accountRepo != nil {
+		now := time.Now()
+		until := now.Add(openAIAPIKey503TempCooldown)
+		persistCtx, persistCancel := openAIAccountStateContext(ctx)
+		err := s.rateLimitService.accountRepo.SetTempUnschedulable(persistCtx, account.ID, until, "openai_apikey_503")
+		persistCancel()
+		if err == nil {
+			account.TempUnschedulableUntil = &until
+			account.TempUnschedulableReason = "openai_apikey_503"
+			s.rateLimitService.notifyAccountSchedulingBlocked(account, until, "openai_apikey_503")
+		}
+	}
 	// Team 联动熔断必须先于 model-not-found 与账户级临时不可调度规则的早退。
 	if s.rateLimitService != nil {
 		s.rateLimitService.maybeHandleOpenAITeamLinkedError(stateCtx, account, statusCode, responseBody)
@@ -185,6 +204,12 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 		}
 	}
 	return shouldDisable
+}
+
+func isOpenAIAPIKeyTemporaryUnavailableBody(responseBody []byte) bool {
+	message := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(responseBody)))
+	return strings.Contains(message, "service temporarily unavailable") ||
+		strings.Contains(message, "temporarily unavailable")
 }
 
 func shouldCooldownOpenAITransientUpstreamError(statusCode int, responseBody []byte) bool {

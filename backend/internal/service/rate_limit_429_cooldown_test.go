@@ -61,7 +61,7 @@ func TestSetRateLimit429CooldownSettings_EnabledRejectsOutOfRange(t *testing.T) 
 	}
 }
 
-func TestHandle429_FallbackUsesDBSeconds(t *testing.T) {
+func TestHandle429_OpenAIOAuthFallbackEnforcesTwentySecondMinimum(t *testing.T) {
 	accountRepo := &rateLimit429AccountRepoStub{}
 	settingRepo := newMockSettingRepo()
 	data, _ := json.Marshal(RateLimit429CooldownSettings{Enabled: true, CooldownSeconds: 12})
@@ -78,7 +78,7 @@ func TestHandle429_FallbackUsesDBSeconds(t *testing.T) {
 
 	require.Equal(t, 1, accountRepo.rateLimitCalls)
 	require.Equal(t, int64(42), accountRepo.lastRateLimitID)
-	require.True(t, !accountRepo.lastRateLimitReset.Before(before.Add(12*time.Second)) && !accountRepo.lastRateLimitReset.After(after.Add(12*time.Second)))
+	require.True(t, !accountRepo.lastRateLimitReset.Before(before.Add(20*time.Second)) && !accountRepo.lastRateLimitReset.After(after.Add(20*time.Second)))
 }
 
 func TestHandleUpstreamError_OpenAIAPIKey429IgnoresCustomCodeAllowListForCooldown(t *testing.T) {

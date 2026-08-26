@@ -148,7 +148,8 @@ func TestOpenAIOAuth429FallbackCooldownHasMinimum(t *testing.T) {
 
 	cooldown, enabled := svc.get429FallbackCooldown(context.Background(), account)
 	require.True(t, enabled)
-	require.GreaterOrEqual(t, cooldown, openAIOAuth429MinimumCooldown)
+	require.Equal(t, 20*time.Second, cooldown)
+	require.Equal(t, 20*time.Second, openAIOAuth429MinimumCooldown)
 }
 
 func TestParseOpenAIRateLimitResetTime_OpenCodeGoUsageLimit(t *testing.T) {

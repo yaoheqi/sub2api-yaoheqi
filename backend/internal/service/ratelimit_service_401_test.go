@@ -152,8 +152,7 @@ func TestRateLimitService_HandleUpstreamError_OAuth401SetsTempUnschedulable(t *t
 }
 
 // TestRateLimitService_HandleUpstreamError_SparkShadow401RedirectsToParent 外审第9轮:影子无独立凭据,
-// 401(母账号 token 问题)必须重定向到凭据 owner(母账号)——母账号 temp-unschedulable + token cache 失效,
-// 影子不得被永久禁用(否则母账号可恢复的 token 问题会把影子永久打死)。
+// 401 必须重定向到凭据 owner（母账号），并永久标记母账号错误。
 func TestRateLimitService_HandleUpstreamError_SparkShadow401RedirectsToParent(t *testing.T) {
 	repo := &rateLimitAccountRepoStub{}
 	repo.accountsByID = map[int64]*Account{}
@@ -183,15 +182,15 @@ func TestRateLimitService_HandleUpstreamError_SparkShadow401RedirectsToParent(t 
 	shouldDisable := service.HandleUpstreamError(context.Background(), shadow, 401, http.Header{}, []byte("unauthorized"))
 
 	require.True(t, shouldDisable)
-	require.Equal(t, 0, repo.setErrorCalls, "spark shadow must not be permanently disabled on a parent-token 401")
-	require.Equal(t, 1, repo.tempCalls)
-	require.Equal(t, parentID, repo.lastTempID, "temp-unschedulable must target the credential owner (parent)")
+	require.Equal(t, 1, repo.setErrorCalls)
+	require.Equal(t, parentID, repo.lastErrorID, "permanent error must target the credential owner (parent)")
+	require.Equal(t, 0, repo.tempCalls)
 	require.Len(t, invalidator.accounts, 1)
 	require.Equal(t, parentID, invalidator.accounts[0].ID, "token cache invalidation must target the parent")
 }
 
 // TestRateLimitService_HandleUpstreamError_OAuth401InvalidatorError
-// OpenAI OAuth 401 缓存失效出错时仍走 temp_unschedulable。
+// OpenAI OAuth 401 缓存失效出错时仍永久标记错误。
 // 注意：401 handler 不再回写 credentials(避免请求开始时的快照整列覆盖 DB
 // 把另一个 worker 刚刷新出来的新 refresh_token 回滚为旧值),
 // 因此 updateCredentialsCalls 应当为 0。
@@ -212,8 +211,8 @@ func TestRateLimitService_HandleUpstreamError_OAuth401InvalidatorError(t *testin
 	shouldDisable := service.HandleUpstreamError(context.Background(), account, 401, http.Header{}, []byte("unauthorized"))
 
 	require.True(t, shouldDisable)
-	require.Equal(t, 0, repo.setErrorCalls)
-	require.Equal(t, 1, repo.tempCalls)
+	require.Equal(t, 1, repo.setErrorCalls)
+	require.Equal(t, 0, repo.tempCalls)
 	require.Equal(t, 0, repo.updateCredentialsCalls)
 	require.Len(t, invalidator.accounts, 1)
 }
@@ -259,7 +258,8 @@ func TestRateLimitService_HandleUpstreamError_OAuth401DoesNotOverwriteCredential
 	require.True(t, shouldDisable)
 	require.Equal(t, 0, repo.updateCredentialsCalls, "401 handler must not write credentials back from the request-start snapshot")
 	require.Equal(t, 0, repo.updateExtraCalls, "OpenAI 401 must not set Antigravity force-refresh marker")
-	require.Equal(t, 1, repo.tempCalls, "401 handler should still set temp-unschedulable cooldown")
+	require.Equal(t, 1, repo.setErrorCalls, "OpenAI OAuth 401 must permanently mark the account")
+	require.Equal(t, 0, repo.tempCalls)
 	require.Nil(t, repo.lastCredentials, "no credentials should have been persisted")
 }
 
@@ -287,7 +287,7 @@ func TestRateLimitService_HandleUpstreamError_OAuth401NoRefreshTokenSetsError(t 
 		require.Equal(t, 1, repo.setErrorCalls, "AT-only OAuth 401 must SetError")
 		require.Equal(t, 0, repo.tempCalls, "AT-only OAuth 401 must NOT temp-unschedule")
 		require.Equal(t, 0, repo.updateCredentialsCalls, "no point forcing expires_at when refresh is impossible")
-		require.Contains(t, repo.lastErrorMsg, "refresh_token missing")
+		require.Contains(t, repo.lastErrorMsg, "OpenAI OAuth")
 		require.Len(t, invalidator.accounts, 1, "cache should still be invalidated")
 	})
 

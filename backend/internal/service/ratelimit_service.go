@@ -71,8 +71,9 @@ const (
 	defaultRateLimit429CooldownSeconds = 5
 	maxRateLimit429CooldownSeconds     = 7200
 	// Codex OAuth 账号的 detail-only 429 通常表示账号/工作区短窗口限流，
-	// 而不是 OAuth 凭据失效。5 秒会导致窗口未恢复就再次进入调度。
-	openAIOAuth429MinimumCooldown = 60 * time.Second
+	// 而不是 OAuth 凭据失效。所有无明确重置时间的 OpenAI OAuth 429
+	// 至少冷却 20 秒，避免窗口未恢复就再次进入调度。
+	openAIOAuth429MinimumCooldown = 20 * time.Second
 )
 
 const (
@@ -440,7 +441,26 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			shouldDisable = true
 			break
 		}
-		// OAuth 账号在 401 错误时临时不可调度（给 token 刷新窗口）；非 OAuth 账号保持原有 SetError 行为。
+		// OpenAI OAuth 401 is treated as a durable credential failure. Resolve
+		// shadow accounts to their credential owner above, invalidate the cached
+		// token, and permanently remove that owner from scheduling.
+		if authAccount.Platform == PlatformOpenAI && authAccount.Type == AccountTypeOAuth {
+			if s.tokenCacheInvalidator != nil {
+				if err := s.tokenCacheInvalidator.InvalidateToken(ctx, authAccount); err != nil {
+					slog.Warn("oauth_401_invalidate_cache_failed", "account_id", authAccount.ID, "error", err)
+				}
+			}
+			msg := "Authentication failed (401): invalid or expired OpenAI OAuth credentials"
+			if upstreamMsg != "" {
+				msg = "OpenAI OAuth 401: " + upstreamMsg
+			}
+			s.handleAuthError(ctx, authAccount, msg)
+			shouldDisable = true
+			break
+		}
+
+		// Other OAuth platforms keep a temporary refresh window; non-OAuth
+		// accounts retain the existing permanent SetError behavior.
 		if authAccount.Type == AccountTypeOAuth {
 			// 1. 失效缓存
 			if s.tokenCacheInvalidator != nil {

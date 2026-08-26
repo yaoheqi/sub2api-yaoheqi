@@ -216,7 +216,10 @@ func (s *RateLimitService) ApplyAccountSchedulingThreshold(ctx context.Context, 
 
 	account.TempUnschedulableUntil = cloneTimePtr(decision.Until)
 	account.TempUnschedulableReason = reason
-	s.notifyAccountSchedulingBlocked(account, *decision.Until, "account_scheduling_threshold")
+	// Keep the durable threshold pause for ordinary scheduling, but do not
+	// publish it as a process-wide runtime block while Codex overdraft is
+	// enabled; overdraft requests use a separate, context-scoped admission path.
+	s.notifyCodexQuotaOverdraftAwareSchedulingBlock(account, *decision.Until)
 
 	if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, *decision.Until, reason); err != nil {
 		slog.Warn("account_scheduling_threshold_set_temp_unsched_failed",

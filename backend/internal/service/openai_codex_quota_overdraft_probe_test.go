@@ -130,6 +130,46 @@ func TestCodexQuotaOverdraftSignalsKeepFiveHourAndSevenDayCyclesSeparate(t *test
 	require.Contains(t, multiple.CycleKey, "|7d:")
 }
 
+func TestCodexQuotaOverdraftSignalPrearmsBeforeExhaustion(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 14, 0, 0, 0, time.UTC)
+	account := newCodexOverdraftProbeTestAccount(now)
+	account.Extra["codex_5h_used_percent"] = float64(codexQuotaOverdraftPrearmPercent)
+
+	signal, eligible := codexQuotaOverdraftSignalFromAccount(account, nil, now)
+
+	require.True(t, eligible)
+	require.Equal(t, "5h", signal.Window)
+	require.False(t, signal.FiveHourExhausted)
+	require.False(t, signal.SevenDayExhausted)
+}
+
+func TestCodexQuotaOverdraftPrearmPassDoesNotStartUsageUntilExhausted(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 14, 0, 0, 0, time.UTC)
+	account := newCodexOverdraftProbeTestAccount(now)
+	account.Extra["codex_5h_used_percent"] = float64(codexQuotaOverdraftPrearmPercent)
+	repo := &codexOverdraftProbeRepoStub{account: account}
+	coordinator := &CodexQuotaOverdraftCoordinator{accountRepo: repo, now: func() time.Time { return now }}
+	coordinator.probeAttemptForTest = func(_ context.Context, _ *Account, model string) codexQuotaOverdraftProbeResult {
+		return codexQuotaOverdraftProbeResult{Status: "available", ReasonCode: "model_response_ok", StatusCode: http.StatusOK, Model: model}
+	}
+	signal, eligible := codexQuotaOverdraftSignalFromAccount(account, nil, now)
+	require.True(t, eligible)
+	state := newCodexOverdraftPendingState(signal, now)
+
+	coordinator.runProbePlan(account.ID, signal, "gpt-5.4", state)
+
+	require.Equal(t, codexQuotaOverdraftProbePassed, state.Status)
+	require.Nil(t, state.FiveHourStartedAt, "预探测通过不能提前累计透支用量")
+	account.Extra["codex_5h_used_percent"] = 100.0
+	exhaustedSignal, exhaustedEligible := codexQuotaOverdraftSignalFromAccount(account, state, now)
+	require.True(t, exhaustedEligible)
+	require.True(t, exhaustedSignal.FiveHourExhausted)
+	coordinator.startProbe(account, exhaustedSignal, "gpt-5.4")
+	activated, ok := codexQuotaOverdraftStateFromAccount(account)
+	require.True(t, ok)
+	require.NotNil(t, activated.FiveHourStartedAt, "达到 100% 后应复用预探测结果并开始透支统计")
+}
+
 func TestCodexQuotaOverdraftSingleProbePassesOnSuccess(t *testing.T) {
 	now := time.Date(2026, time.August, 13, 14, 0, 0, 0, time.UTC)
 	account := newCodexOverdraftProbeTestAccount(now)
@@ -389,6 +429,8 @@ func TestCodexQuotaOverdraftNewWindowPreservesExistingWindowBaseline(t *testing.
 		RecoverAt:         sevenRecover,
 		FiveHourRecoverAt: codexQuotaOverdraftTimePtr(fiveRecover),
 		SevenDayRecoverAt: codexQuotaOverdraftTimePtr(sevenRecover),
+		FiveHourExhausted: true,
+		SevenDayExhausted: true,
 	}
 	target := newCodexOverdraftPendingState(signal, now)
 	carryCodexQuotaOverdraftWindowStarts(target, current, signal, now)

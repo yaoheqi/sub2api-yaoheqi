@@ -485,6 +485,9 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	if cfg.Gateway.OpenAIWS.FallbackCooldownSeconds != 30 {
 		t.Fatalf("Gateway.OpenAIWS.FallbackCooldownSeconds = %d, want 30", cfg.Gateway.OpenAIWS.FallbackCooldownSeconds)
 	}
+	if !cfg.Gateway.CodexQuotaOverdraftEnabled {
+		t.Fatal("Gateway.CodexQuotaOverdraftEnabled = false, want true")
+	}
 	if cfg.Gateway.OpenAIWS.EventFlushBatchSize != 1 {
 		t.Fatalf("Gateway.OpenAIWS.EventFlushBatchSize = %d, want 1", cfg.Gateway.OpenAIWS.EventFlushBatchSize)
 	}

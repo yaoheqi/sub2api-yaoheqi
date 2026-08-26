@@ -122,12 +122,6 @@
         <div v-if="hasOpenAIUsageFallback" class="min-w-[22rem] space-y-1" data-testid="openai-usage-compact">
           <div class="flex min-h-5 items-center gap-1.5">
             <CodexOverdraftStatus :state="usageInfo?.codex_quota_overdraft" />
-            <div v-if="openAICompactStats" class="flex min-w-0 items-center gap-1 text-[9px] text-gray-500 dark:text-gray-400">
-              <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">{{ openAICompactStats.requests }} req</span>
-              <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">{{ openAICompactStats.tokens }}</span>
-              <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">A ${{ openAICompactStats.accountCost }}</span>
-              <span v-if="openAICompactStats.userCost" class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">U ${{ openAICompactStats.userCost }}</span>
-            </div>
             <button
               type="button"
               class="hidden"
@@ -139,13 +133,14 @@
               </svg>
             </button>
           </div>
-          <div class="flex min-h-5 items-center gap-3">
+          <div class="space-y-1">
             <UsageProgressBar
               v-if="usageInfo?.five_hour"
               compact
               label="5h"
               :utilization="usageInfo.five_hour.utilization"
               :resets-at="usageInfo.five_hour.resets_at"
+              :window-stats="usageInfo.five_hour.window_stats"
               :overdraft-active="usageInfo.five_hour.overdraft_active"
               :overdraft-stats="usageInfo.five_hour.overdraft_stats"
               :overdraft-started-at="usageInfo.five_hour.overdraft_started_at"
@@ -159,6 +154,7 @@
               label="7d"
               :utilization="usageInfo.seven_day.utilization"
               :resets-at="usageInfo.seven_day.resets_at"
+              :window-stats="usageInfo.seven_day.window_stats"
               :overdraft-active="usageInfo.seven_day.overdraft_active"
               :overdraft-stats="usageInfo.seven_day.overdraft_stats"
               :overdraft-started-at="usageInfo.seven_day.overdraft_started_at"
@@ -882,17 +878,6 @@ const geminiUsageAvailable = computed(() => {
 const hasOpenAIUsageFallback = computed(() => {
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return false
   return !!usageInfo.value?.five_hour || !!usageInfo.value?.seven_day || !!usageInfo.value?.codex_quota_overdraft
-})
-
-const openAICompactStats = computed(() => {
-  const stats = usageInfo.value?.five_hour?.window_stats ?? usageInfo.value?.seven_day?.window_stats
-  if (!stats || (stats.requests <= 0 && stats.tokens <= 0)) return null
-  return {
-    requests: formatCompactNumber(stats.requests, { allowBillions: false }),
-    tokens: formatCompactNumber(stats.tokens),
-    accountCost: stats.cost.toFixed(2),
-    userCost: stats.user_cost == null ? null : stats.user_cost.toFixed(2)
-  }
 })
 
 const openAIUsageRefreshKey = computed(() => buildOpenAIUsageRefreshKey(props.account))

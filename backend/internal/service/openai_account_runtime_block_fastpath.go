@@ -62,9 +62,9 @@ func classifyOpenAIOAuth429(headers http.Header, responseBody []byte) (openAIOAu
 			}
 		}
 	}
-	if resetAt := calculateOpenAI429ResetTime(headers); resetAt != nil {
-		return openAIOAuth429QuotaReset, resetAt
-	}
+	// Retry-After is a request-level retry hint, not proof that the account's
+	// quota window is exhausted. Keep OAuth same-account retry eligible while
+	// the caller still uses Retry-After to choose the retry delay/cooldown.
 	if resetUnix := parseOpenAIRateLimitResetTime(responseBody); resetUnix != nil {
 		resetAt := time.Unix(*resetUnix, 0)
 		return openAIOAuth429QuotaReset, &resetAt

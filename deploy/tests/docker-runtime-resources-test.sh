@@ -12,14 +12,14 @@ fail() {
 assert_line() {
   file=$1
   line=$2
-  grep -Fqx "$line" "$file" || fail "$file is missing: $line"
+  tr -d '\r' < "$file" | grep -Fqx "$line" || fail "$file is missing: $line"
 }
 
 assert_count() {
   file=$1
   line=$2
   expected=$3
-  actual=$(grep -Fxc "$line" "$file" || true)
+  actual=$(tr -d '\r' < "$file" | grep -Fxc "$line" || true)
   [ "$actual" -eq "$expected" ] || fail "$file has $actual occurrences of '$line', expected $expected"
 }
 

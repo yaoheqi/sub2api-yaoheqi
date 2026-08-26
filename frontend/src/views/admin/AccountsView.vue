@@ -640,7 +640,6 @@ const DEFAULT_HIDDEN_COLUMNS = [
   'usage',
   'proxy',
   'notes',
-  'priority',
   'scheduler_score',
   'rate_multiplier',
   'upstream_billing_rate',
@@ -971,10 +970,14 @@ const loadSavedColumns = () => {
       parsed.forEach(key => {
         hiddenColumns.add(key)
       })
-      // Migrate older saved layouts to the compact default once; users can re-enable detail columns afterwards.
-      if (localStorage.getItem(HIDDEN_COLUMNS_VERSION_KEY) !== HIDDEN_COLUMNS_CURRENT_VERSION) {
+      const savedVersion = localStorage.getItem(HIDDEN_COLUMNS_VERSION_KEY)
+      // Layouts without a version predate managed defaults. Existing versioned
+      // layouts represent an explicit user choice and must not be expanded.
+      if (!savedVersion) {
         DEFAULT_HIDDEN_COLUMNS.forEach(key => hiddenColumns.add(key))
         localStorage.setItem(HIDDEN_COLUMNS_KEY, JSON.stringify([...hiddenColumns]))
+      }
+      if (savedVersion !== HIDDEN_COLUMNS_CURRENT_VERSION) {
         localStorage.setItem(HIDDEN_COLUMNS_VERSION_KEY, HIDDEN_COLUMNS_CURRENT_VERSION)
       }
     } else {

@@ -327,6 +327,16 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		slog.Info("pool_mode_error_skipped", "account_id", account.ID, "status_code", statusCode)
 		return false
 	}
+	// Third-party OpenAI API keys must leave scheduling briefly on every
+	// upstream 429, even when custom error-code handling is enabled without
+	// 429 in its allow-list. Pool mode is intentionally excluded because its
+	// request-local retry budget owns the same-account retry decision.
+	if statusCode == http.StatusTooManyRequests &&
+		account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey &&
+		!account.IsPoolMode() {
+		s.handle429(ctx, account, headers, responseBody)
+		return false
+	}
 
 	// apikey 类型账号：检查自定义错误码配置
 	// 如果启用且错误码不在列表中，则不处理（不停止调度、不标记限流/过载）

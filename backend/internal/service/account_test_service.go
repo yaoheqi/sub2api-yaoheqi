@@ -737,6 +737,11 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	}
 	payload := createOpenAITestPayload(upstreamTestModelID, isOAuth)
 	payloadBytes, _ := json.Marshal(payload)
+	// Keep the admin probe on the same Codex overdraft path as normal gateway
+	// traffic. Without this hook, quota-exhausted accounts receive the upstream
+	// 429 directly and the coordinator never gets evidence to process.
+	ctx, payloadBytes, overdraftInjected := s.prepareCodexQuotaOverdraftTestRequest(ctx, credentialAccount, payloadBytes)
+	c.Request = c.Request.WithContext(ctx)
 
 	// Send test_start event once. A task-invalid Agent Identity response may
 	// restart this probe after registering a replacement task.
@@ -821,6 +826,9 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 			return s.testOpenAIAccountConnection(c, account, modelID, prompt, mode)
 		}
 		if resp.StatusCode == http.StatusTooManyRequests {
+			if s.handleCodexQuotaOverdraftTest429(ctx, credentialAccount, resp.Header, body, testModelID) {
+				return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
+			}
 			s.reconcileOpenAI429State(ctx, account, resp.Header, body)
 		}
 		// 401 Unauthorized: 标记账号为永久错误
@@ -831,6 +839,9 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
 	}
 
+	if overdraftInjected {
+		s.observeCodexQuotaOverdraftTestResult(credentialAccount, testModelID, true)
+	}
 	// Process SSE stream
 	return s.processOpenAIStream(c, resp.Body)
 }

@@ -344,3 +344,18 @@ func newTestPrivacyClientFactory() PrivacyClientFactory {
 		return req.C().SetTimeout(time.Second), nil
 	}
 }
+
+func TestValidateOpenAITokenReturnsUnauthorized(t *testing.T) {
+	oldURL := chatGPTAccountsCheckURL
+	defer func() { chatGPTAccountsCheckURL = oldURL }()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"code":"token_invalidated"}}`))
+	}))
+	defer server.Close()
+	chatGPTAccountsCheckURL = server.URL
+
+	err := validateOpenAIToken(context.Background(), newTestPrivacyClientFactory(), "access-token", "")
+	require.Error(t, err)
+	require.ErrorIs(t, err, errOpenAITokenUnauthorized)
+}

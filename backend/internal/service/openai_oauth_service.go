@@ -386,7 +386,18 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 	}
 
 	clientID := account.GetCredential("client_id")
-	return s.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, clientID)
+	tokenInfo, err := s.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, clientID)
+	if err != nil {
+		return nil, err
+	}
+	// A successful refresh response does not guarantee that the resulting
+	// session is still accepted by ChatGPT. Probe the authenticated account
+	// endpoint so an invalidated access token is surfaced to the refresh service,
+	// which persists the account as permanently errored.
+	if err := validateOpenAIToken(ctx, s.privacyClientFactory, tokenInfo.AccessToken, proxyURL); err != nil {
+		return nil, err
+	}
+	return tokenInfo, nil
 }
 
 // BuildAccountCredentials builds credentials map from token info

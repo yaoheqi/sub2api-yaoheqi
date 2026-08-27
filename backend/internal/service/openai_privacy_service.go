@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/imroc/req/v3"
 )
+
+var errOpenAITokenUnauthorized = errors.New("OPENAI_OAUTH_ACCESS_TOKEN_INVALID: upstream returned 401")
 
 // PrivacyClientFactory creates an HTTP client for privacy API calls.
 // Injected from repository layer to avoid import cycles.
@@ -211,6 +214,40 @@ func fetchChatGPTAccountInfo(ctx context.Context, clientFactory PrivacyClientFac
 
 	slog.Info("chatgpt_account_check_success", "plan_type", info.PlanType, "subscription_expires_at", info.SubscriptionExpiresAt, "org_id", orgID)
 	return info
+}
+
+// validateOpenAIToken performs a lightweight authenticated probe after an OAuth
+// refresh. Token refresh endpoints can return a syntactically valid access token
+// even when the session has already been invalidated; the backend account check
+// is the authoritative liveness signal. Only a 401 is treated as credential
+// failure so transient upstream errors remain best-effort.
+func validateOpenAIToken(ctx context.Context, clientFactory PrivacyClientFactory, accessToken, proxyURL string) error {
+	if strings.TrimSpace(accessToken) == "" || clientFactory == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	client, err := clientFactory(proxyURL)
+	if err != nil {
+		return nil
+	}
+	resp, err := client.R().SetContext(ctx).
+		SetHeader("Authorization", "Bearer "+accessToken).
+		SetHeader("Origin", "https://chatgpt.com").
+		SetHeader("Referer", "https://chatgpt.com/").
+		SetHeader("Accept", "application/json").
+		Get(chatGPTAccountsCheckURL)
+	if err != nil {
+		return nil
+	}
+	if resp.StatusCode == 401 {
+		body := strings.TrimSpace(resp.String())
+		if body != "" {
+			return fmt.Errorf("%w: %s", errOpenAITokenUnauthorized, truncate(body, 300))
+		}
+		return errOpenAITokenUnauthorized
+	}
+	return nil
 }
 
 // fetchChatGPTSubscriptionExpiresAt reads the lightweight subscription endpoint used by

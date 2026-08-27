@@ -67,6 +67,8 @@ type codexQuotaOverdraftSignal struct {
 	RecoverAt         time.Time
 	FiveHourRecoverAt *time.Time
 	SevenDayRecoverAt *time.Time
+	// Exhaustion flags are retained for callers that need to distinguish the
+	// affected windows; eligibility itself is only true at 100% usage.
 	FiveHourExhausted bool
 	SevenDayExhausted bool
 }
@@ -185,17 +187,11 @@ func (c *CodexQuotaOverdraftCoordinator) observeBusinessSuccess(account *Account
 	}
 	now := c.currentTime()
 	current, _ := codexQuotaOverdraftStateFromAccount(account)
-	signal, eligible := codexQuotaOverdraftSignalFromAccount(account, current, now)
-	if !eligible {
+	signal, exhausted := codexQuotaOverdraftSignalFromAccount(account, current, now)
+	if !exhausted {
 		return
 	}
 	if current != nil && current.Status == codexQuotaOverdraftProbePassed && codexQuotaOverdraftStateCoversSignal(current, signal) {
-		if signal.FiveHourExhausted || signal.SevenDayExhausted {
-			startCodexQuotaOverdraftWindows(current, signal, now)
-			if c.persistNonFailedState(account.ID, current) {
-				mergeAccountExtra(account, map[string]any{CodexQuotaOverdraftProbeExtraKey: current})
-			}
-		}
 		return
 	}
 	if current != nil && current.Status == codexQuotaOverdraftProbeFailed && codexQuotaOverdraftStateCoversSignal(current, signal) {
@@ -241,8 +237,8 @@ func (c *CodexQuotaOverdraftCoordinator) observeAccount(account *Account, prefer
 		c.persistState(account.ID, state)
 		mergeAccountExtra(account, map[string]any{CodexQuotaOverdraftProbeExtraKey: state})
 	}
-	signal, eligible := codexQuotaOverdraftSignalFromAccount(account, state, now)
-	if !eligible {
+	signal, exhausted := codexQuotaOverdraftSignalFromAccount(account, state, now)
+	if !exhausted {
 		c.recoverCycle(account, state, now)
 		return
 	}
@@ -363,12 +359,6 @@ func (c *CodexQuotaOverdraftCoordinator) startProbe(account *Account, signal cod
 	if hasCurrent && codexQuotaOverdraftStateCoversSignal(current, signal) {
 		switch current.Status {
 		case codexQuotaOverdraftProbePassed:
-			if signal.FiveHourExhausted || signal.SevenDayExhausted {
-				startCodexQuotaOverdraftWindows(current, signal, c.currentTime().UTC())
-				if c.persistNonFailedState(account.ID, current) {
-					mergeAccountExtra(account, map[string]any{CodexQuotaOverdraftProbeExtraKey: current})
-				}
-			}
 			return
 		case codexQuotaOverdraftProbeFailed:
 			c.ensureFailedPause(account, current)
@@ -926,9 +916,6 @@ func codexQuotaOverdraftProbeModels(preferred string) []string {
 func codexQuotaOverdraftResponseIsQuotaLimited(headers http.Header, body []byte) bool {
 	var payload any
 	parsedPayload := len(bytes.TrimSpace(body)) > 0 && json.Unmarshal(body, &payload) == nil
-	if parsedPayload && codexQuotaOverdraftJSONHasQuotaEvidence(payload, 0) {
-		return true
-	}
 	text := strings.ToLower(strings.Join(strings.Fields(string(body)), " "))
 	for _, marker := range []string{
 		"usage_limit_reached",
@@ -943,13 +930,29 @@ func codexQuotaOverdraftResponseIsQuotaLimited(headers http.Header, body []byte)
 			return true
 		}
 	}
+	if codexQuotaOverdraftTextHasTransientRateLimitEvidence(text) {
+		return false
+	}
 	if parsedPayload && codexQuotaOverdraftJSONHasTransientRateLimitEvidence(payload, 0) {
 		return false
+	}
+	if parsedPayload && codexQuotaOverdraftJSONHasQuotaEvidence(payload, 0) {
+		return true
 	}
 	if snapshot := ParseCodexRateLimitHeaders(headers); snapshot != nil {
 		if normalized := snapshot.Normalize(); normalized != nil &&
 			(normalized.Used5hPercent != nil && *normalized.Used5hPercent >= 100 ||
 				normalized.Used7dPercent != nil && *normalized.Used7dPercent >= 100) {
+			return true
+		}
+	}
+	return false
+}
+
+func codexQuotaOverdraftTextHasTransientRateLimitEvidence(text string) bool {
+	normalized := strings.NewReplacer("-", "_", " ", "_").Replace(strings.ToLower(text))
+	for _, marker := range []string{"rate_limit_error", "rate_limit_exceeded", "too_many_requests", "request_rate_limited", "token_rate_limited"} {
+		if strings.Contains(normalized, marker) {
 			return true
 		}
 	}
@@ -1031,7 +1034,7 @@ func codexQuotaOverdraftJSONHasTransientRateLimitEvidence(value any, depth int) 
 				if marker, ok := raw.(string); ok {
 					marker = strings.NewReplacer("-", "_", " ", "_").Replace(strings.ToLower(strings.TrimSpace(marker)))
 					switch marker {
-					case "rate_limit_exceeded", "too_many_requests", "request_rate_limited", "token_rate_limited":
+					case "rate_limit_error", "rate_limit_exceeded", "too_many_requests", "request_rate_limited", "token_rate_limited":
 						return true
 					}
 				}
@@ -1062,21 +1065,19 @@ func codexQuotaOverdraftSignalFromAccount(account *Account, state *CodexQuotaOve
 		fiveReset = stabilizeCodexQuotaOverdraftReset(fiveReset, state.FiveHourRecoverAt, now)
 		sevenReset = stabilizeCodexQuotaOverdraftReset(sevenReset, state.SevenDayRecoverAt, now)
 	}
-	fiveEligible := fiveUsed >= codexQuotaOverdraftPrearmPercent && (fiveReset == nil || fiveReset.After(now))
-	sevenEligible := sevenUsed >= codexQuotaOverdraftPrearmPercent && (sevenReset == nil || sevenReset.After(now))
-	if !fiveEligible && !sevenEligible {
+	fiveExhausted := fiveUsed >= 100 && (fiveReset == nil || fiveReset.After(now))
+	sevenExhausted := sevenUsed >= 100 && (sevenReset == nil || sevenReset.After(now))
+	if !fiveExhausted && !sevenExhausted {
 		return codexQuotaOverdraftSignal{}, false
 	}
-	fiveExhausted := fiveUsed >= 100 && fiveEligible
-	sevenExhausted := sevenUsed >= 100 && sevenEligible
-	if fiveEligible && fiveReset == nil {
+	if fiveExhausted && fiveReset == nil {
 		fallback := now.Add(5 * time.Hour)
 		if state != nil && state.FiveHourRecoverAt != nil && state.FiveHourRecoverAt.After(now) {
 			fallback = *state.FiveHourRecoverAt
 		}
 		fiveReset = &fallback
 	}
-	if sevenEligible && sevenReset == nil {
+	if sevenExhausted && sevenReset == nil {
 		fallback := now.Add(7 * 24 * time.Hour)
 		if state != nil && state.SevenDayRecoverAt != nil && state.SevenDayRecoverAt.After(now) {
 			fallback = *state.SevenDayRecoverAt
@@ -1091,11 +1092,11 @@ func codexQuotaOverdraftSignalFromAccount(account *Account, state *CodexQuotaOve
 		SevenDayExhausted: sevenExhausted,
 	}
 	switch {
-	case fiveEligible && sevenEligible:
+	case fiveExhausted && sevenExhausted:
 		signal.Window = "multiple"
 		signal.CycleKey = fmt.Sprintf("5h:%d|7d:%d", fiveReset.Unix(), sevenReset.Unix())
 		signal.RecoverAt = laterTime(*fiveReset, *sevenReset)
-	case fiveEligible:
+	case fiveExhausted:
 		signal.Window = "5h"
 		signal.CycleKey = fmt.Sprintf("5h:%d", fiveReset.Unix())
 		signal.RecoverAt = *fiveReset
@@ -1290,12 +1291,19 @@ func startCodexQuotaOverdraftWindows(state *CodexQuotaOverdraftProbeState, signa
 	if state == nil {
 		return
 	}
-	if signal.FiveHourExhausted {
+	switch signal.Window {
+	case "5h":
 		if state.FiveHourStartedAt == nil {
 			state.FiveHourStartedAt = codexQuotaOverdraftTimePtr(testedAt)
 		}
-	}
-	if signal.SevenDayExhausted {
+	case "7d":
+		if state.SevenDayStartedAt == nil {
+			state.SevenDayStartedAt = codexQuotaOverdraftTimePtr(testedAt)
+		}
+	default:
+		if state.FiveHourStartedAt == nil {
+			state.FiveHourStartedAt = codexQuotaOverdraftTimePtr(testedAt)
+		}
 		if state.SevenDayStartedAt == nil {
 			state.SevenDayStartedAt = codexQuotaOverdraftTimePtr(testedAt)
 		}

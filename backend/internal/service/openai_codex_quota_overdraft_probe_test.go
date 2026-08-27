@@ -135,12 +135,8 @@ func TestCodexQuotaOverdraftSignalPrearmsBeforeExhaustion(t *testing.T) {
 	account := newCodexOverdraftProbeTestAccount(now)
 	account.Extra["codex_5h_used_percent"] = float64(codexQuotaOverdraftPrearmPercent)
 
-	signal, eligible := codexQuotaOverdraftSignalFromAccount(account, nil, now)
-
-	require.True(t, eligible)
-	require.Equal(t, "5h", signal.Window)
-	require.False(t, signal.FiveHourExhausted)
-	require.False(t, signal.SevenDayExhausted)
+	_, eligible := codexQuotaOverdraftSignalFromAccount(account, nil, now)
+	require.False(t, eligible, "prearm threshold must not start an overdraft cycle")
 }
 
 func TestCodexQuotaOverdraftPrearmPassDoesNotStartUsageUntilExhausted(t *testing.T) {
@@ -152,18 +148,16 @@ func TestCodexQuotaOverdraftPrearmPassDoesNotStartUsageUntilExhausted(t *testing
 	coordinator.probeAttemptForTest = func(_ context.Context, _ *Account, model string) codexQuotaOverdraftProbeResult {
 		return codexQuotaOverdraftProbeResult{Status: "available", ReasonCode: "model_response_ok", StatusCode: http.StatusOK, Model: model}
 	}
-	signal, eligible := codexQuotaOverdraftSignalFromAccount(account, nil, now)
-	require.True(t, eligible)
-	state := newCodexOverdraftPendingState(signal, now)
+	_, eligible := codexQuotaOverdraftSignalFromAccount(account, nil, now)
+	require.False(t, eligible)
 
-	coordinator.runProbePlan(account.ID, signal, "gpt-5.4", state)
-
-	require.Equal(t, codexQuotaOverdraftProbePassed, state.Status)
-	require.Nil(t, state.FiveHourStartedAt, "预探测通过不能提前累计透支用量")
 	account.Extra["codex_5h_used_percent"] = 100.0
-	exhaustedSignal, exhaustedEligible := codexQuotaOverdraftSignalFromAccount(account, state, now)
+	exhaustedSignal, exhaustedEligible := codexQuotaOverdraftSignalFromAccount(account, nil, now)
 	require.True(t, exhaustedEligible)
 	require.True(t, exhaustedSignal.FiveHourExhausted)
+	state := newCodexOverdraftPendingState(exhaustedSignal, now)
+	coordinator.runProbePlan(account.ID, exhaustedSignal, "gpt-5.4", state)
+	require.Equal(t, codexQuotaOverdraftProbePassed, state.Status)
 	coordinator.startProbe(account, exhaustedSignal, "gpt-5.4")
 	activated, ok := codexQuotaOverdraftStateFromAccount(account)
 	require.True(t, ok)

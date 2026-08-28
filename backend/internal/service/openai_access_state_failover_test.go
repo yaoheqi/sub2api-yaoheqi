@@ -155,7 +155,7 @@ func TestOpenAIHTTPAccessStateTrustsStructuredCode(t *testing.T) {
 }
 
 func TestOpenAIHTTPAuthMessagesUseExistingStatusPolicies(t *testing.T) {
-	t.Run("oauth 401 remains recoverable", func(t *testing.T) {
+	t.Run("oauth 401 permanently invalidates credentials", func(t *testing.T) {
 		repo := &openAIAuthPolicyAccountRepo{}
 		rateLimits := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 		svc := &OpenAIGatewayService{rateLimitService: rateLimits}
@@ -165,8 +165,8 @@ func TestOpenAIHTTPAuthMessagesUseExistingStatusPolicies(t *testing.T) {
 
 		require.False(t, isOpenAIHTTPUpstreamAccessStateError(http.StatusUnauthorized, "", body))
 		require.True(t, svc.handleOpenAIAccountUpstreamError(context.Background(), account, http.StatusUnauthorized, nil, body))
-		require.Zero(t, repo.setErrorCalls)
-		require.Equal(t, 1, repo.tempCalls)
+		require.Equal(t, 1, repo.setErrorCalls)
+		require.Zero(t, repo.tempCalls)
 	})
 
 	t.Run("403 uses counter cooldown", func(t *testing.T) {

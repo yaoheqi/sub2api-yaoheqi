@@ -1346,8 +1346,8 @@ func TestFetchCodexModelsManifestOAuth401MarksAccountUnschedulable(t *testing.T)
 	_, err := s.FetchCodexModelsManifest(context.Background(), account, "0.137.0", "")
 	require.Error(t, err)
 	require.True(t, IsRetryableCodexModelsManifestError(err), "manifest 401 should allow account failover")
-	require.Equal(t, 1, repo.setTempUnschedCalls, "OAuth 401 should temp-unschedule the account")
-	require.Equal(t, 0, repo.setErrorCalls)
+	require.Equal(t, 1, repo.setErrorCalls, "OpenAI OAuth 401 should permanently invalidate the account credentials")
+	require.Equal(t, 0, repo.setTempUnschedCalls)
 	require.True(t, s.isOpenAIAccountRuntimeBlocked(account), "account should be runtime-blocked after manifest 401")
 }
 

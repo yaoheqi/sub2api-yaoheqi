@@ -336,13 +336,13 @@ func (s *OpenAIGatewayService) handleOpenAIWSFailureAccountSideEffects(ctx conte
 	status := openAIStreamFailureStatus(payload, message)
 	switch status {
 	case http.StatusUnauthorized, http.StatusTooManyRequests, 529:
-		s.handleOpenAIStreamTerminalAccountSideEffects(nil, account, payload, message, headers)
+		s.handleOpenAIStreamTerminalAccountSideEffects(nil, account, payload, message, headers, canonicalModel)
 		return true
 	case http.StatusForbidden:
 		if !openAIStream403AccountFailure(payload, message) {
 			return false
 		}
-		s.handleOpenAIStreamTerminalAccountSideEffects(nil, account, payload, message, headers)
+		s.handleOpenAIStreamTerminalAccountSideEffects(nil, account, payload, message, headers, canonicalModel)
 		return true
 	}
 

@@ -470,10 +470,17 @@ func (s *OpenAIGatewayService) readUpstreamErrorBody(resp *http.Response) []byte
 }
 
 func (s *OpenAIGatewayService) handleFailoverSideEffects(ctx context.Context, resp *http.Response, account *Account, responseBody []byte, canonicalModel ...string) bool {
-	if len(canonicalModel) > 0 {
-		return s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, responseBody, canonicalModel[0])
+	if resp == nil {
+		return false
 	}
-	return s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, responseBody)
+	// A Codex subscription-quota 429 may be recoverable through the overdraft
+	// cycle. Let the coordinator classify it before the generic account policy;
+	// its handled result must still force the caller down the failover path.
+	overdraftHandled := s.handleCodexQuotaOverdraftUpstream429(ctx, account, resp.StatusCode, resp.Header, responseBody, canonicalModel)
+	if len(canonicalModel) > 0 {
+		return s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, responseBody, canonicalModel[0]) || overdraftHandled
+	}
+	return s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, responseBody) || overdraftHandled
 }
 
 func (s *OpenAIGatewayService) handleErrorResponse(

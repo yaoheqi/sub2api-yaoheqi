@@ -903,7 +903,11 @@ func (s *OpenAIGatewayService) handleFailoverErrorResponsePassthrough(
 	logOpenAIInstructionsRequiredDebug(ctx, c, account, resp.StatusCode, upstreamMsg, requestBody, body)
 	reqModel, _, _ := extractOpenAIRequestMetaFromBody(requestBody)
 	canonicalModel := canonicalOpenAIAccountSchedulingModel(account, reqModel)
+	overdraftHandled := s.handleCodexQuotaOverdraftUpstream429(
+		ctx, account, resp.StatusCode, resp.Header, body, []string{canonicalModel},
+	)
 	shouldDisable := s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, canonicalModel)
+	shouldDisable = shouldDisable || overdraftHandled
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 		Platform:             account.Platform,
 		AccountID:            account.ID,
@@ -1572,6 +1576,7 @@ func (s *OpenAIGatewayService) handleOpenAIStreamTerminalAccountSideEffects(
 	payload []byte,
 	message string,
 	headers http.Header,
+	canonicalModel ...string,
 ) (int, bool) {
 	statusCode := openAIStreamFailureStatus(payload, message)
 	switch statusCode {
@@ -1592,7 +1597,11 @@ func (s *OpenAIGatewayService) handleOpenAIStreamTerminalAccountSideEffects(
 			// carried by a stream terminal event.
 			accountHeaders = nil
 		}
-		return statusCode, s.handleOpenAIAccountUpstreamError(ctx, account, statusCode, accountHeaders, payload)
+		overdraftHandled := s.handleCodexQuotaOverdraftUpstream429(
+			ctx, account, statusCode, accountHeaders, payload, canonicalModel,
+		)
+		shouldDisable := s.handleOpenAIAccountUpstreamError(ctx, account, statusCode, accountHeaders, payload, canonicalModel...)
+		return statusCode, shouldDisable || overdraftHandled
 	default:
 		return statusCode, false
 	}

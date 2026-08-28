@@ -2625,6 +2625,7 @@ func createOpenAITestPayload(modelID string, isOAuth bool) map[string]any {
 		"model": modelID,
 		"input": []map[string]any{
 			{
+				"type": "message",
 				"role": "user",
 				"content": []map[string]any{
 					{

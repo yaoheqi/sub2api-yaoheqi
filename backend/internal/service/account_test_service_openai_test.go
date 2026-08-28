@@ -137,6 +137,41 @@ func TestAccountTestService_OpenAISuccessPersistsSnapshotFromHeaders(t *testing.
 	require.Contains(t, recorder.Body.String(), "test_complete")
 }
 
+func TestAccountTestService_OpenAIOverdraftTestInjectsCustomToolCall(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := newTestContext()
+
+	resp := newJSONResponse(http.StatusOK, "")
+	resp.Body = io.NopCloser(strings.NewReader("data: {\"type\":\"response.completed\"}\n\n"))
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
+	svc := &AccountTestService{
+		httpUpstream: upstream,
+		cfg: &config.Config{Gateway: config.GatewayConfig{
+			CodexQuotaOverdraftEnabled: true,
+		}},
+	}
+	account := &Account{
+		ID:          901,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "test-token"},
+		Extra: map[string]any{
+			"codex_5h_used_percent": 100,
+			"codex_5h_reset_at":     time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+		},
+	}
+
+	SetCodexQuotaOverdraftEnabled(true)
+	t.Cleanup(func() { SetCodexQuotaOverdraftEnabled(false) })
+	require.NoError(t, svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4", "", ""))
+	require.Len(t, upstream.requests, 1)
+
+	body, err := io.ReadAll(upstream.requests[0].Body)
+	require.NoError(t, err)
+	require.True(t, codexQuotaOverdraftBodyHasInjection(body), "admin overdraft test request must carry the custom tool call")
+}
+
 func TestAccountTestService_OpenAIOAuthTestNormalizesGPT56Alias(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := newTestContext()

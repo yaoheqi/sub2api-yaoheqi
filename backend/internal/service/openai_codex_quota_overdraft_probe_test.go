@@ -6,11 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -276,6 +278,81 @@ func TestCodexQuotaOverdraftInjectedBusinessQuota429FailsImmediately(t *testing.
 	require.Equal(t, codexQuotaOverdraftProbeFailed, state.Status)
 	require.Equal(t, "business_quota_limited", state.ReasonCode)
 	require.Equal(t, 1, repo.tempPauseCalls)
+}
+
+func TestOpenAIFailoverSideEffectsUsesCodexQuotaOverdraft(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 14, 0, 0, 0, time.UTC)
+	account := newCodexOverdraftProbeTestAccount(now)
+	repo := &codexOverdraftProbeRepoStub{account: account}
+	svc := &OpenAIGatewayService{
+		accountRepo: repo,
+		cfg:         &config.Config{Gateway: config.GatewayConfig{CodexQuotaOverdraftEnabled: true}},
+	}
+	svc.codexQuotaOverdraft = &CodexQuotaOverdraftCoordinator{
+		accountRepo:  repo,
+		httpUpstream: &queuedHTTPUpstream{},
+		cfg:          svc.cfg,
+		now:          func() time.Time { return now },
+	}
+	ctx := WithCodexQuotaOverdraftScheduling(context.Background())
+	markCodexQuotaOverdraftInjected(ctx, account.ID)
+	resp := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
+
+	require.True(t, svc.handleFailoverSideEffects(ctx, resp, account, []byte(`{"error":{"type":"usage_limit_reached"}}`), "gpt-5.4"))
+	require.Equal(t, 1, repo.tempPauseCalls)
+}
+
+func TestOpenAIFailoverSideEffectsLeavesTransient429ToNormalPolicy(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 14, 0, 0, 0, time.UTC)
+	account := newCodexOverdraftProbeTestAccount(now)
+	repo := &codexOverdraftProbeRepoStub{account: account}
+	cfg := &config.Config{Gateway: config.GatewayConfig{CodexQuotaOverdraftEnabled: true}}
+	svc := &OpenAIGatewayService{accountRepo: repo, cfg: cfg}
+	svc.codexQuotaOverdraft = &CodexQuotaOverdraftCoordinator{
+		accountRepo:  repo,
+		httpUpstream: &queuedHTTPUpstream{},
+		cfg:          cfg,
+		now:          func() time.Time { return now },
+	}
+	ctx := WithCodexQuotaOverdraftScheduling(context.Background())
+	markCodexQuotaOverdraftInjected(ctx, account.ID)
+	resp := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
+
+	require.False(t, svc.handleFailoverSideEffects(ctx, resp, account, []byte(`{"error":{"type":"rate_limit_exceeded","message":"too many requests"}}`), "gpt-5.4"))
+	require.Zero(t, repo.tempPauseCalls)
+}
+
+func TestOpenAIPassthroughFailoverUsesCodexQuotaOverdraft(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 14, 0, 0, 0, time.UTC)
+	account := newCodexOverdraftProbeTestAccount(now)
+	repo := &codexOverdraftProbeRepoStub{account: account}
+	cfg := &config.Config{Gateway: config.GatewayConfig{CodexQuotaOverdraftEnabled: true}}
+	svc := &OpenAIGatewayService{accountRepo: repo, cfg: cfg}
+	svc.codexQuotaOverdraft = &CodexQuotaOverdraftCoordinator{
+		accountRepo:  repo,
+		httpUpstream: &queuedHTTPUpstream{},
+		cfg:          cfg,
+		now:          func() time.Time { return now },
+	}
+	ctx := WithCodexQuotaOverdraftScheduling(context.Background())
+	markCodexQuotaOverdraftInjected(ctx, account.ID)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
+	resp := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
+
+	err := svc.handleFailoverErrorResponsePassthrough(
+		ctx,
+		resp,
+		c,
+		account,
+		[]byte(`{"model":"gpt-5.4"}`),
+		[]byte(`{"error":{"type":"usage_limit_reached"}}`),
+	)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, 1, repo.tempPauseCalls)
+	require.False(t, failoverErr.RetryableOnSameAccount)
 }
 
 func TestCodexQuotaOverdraftTransient429DoesNotEnterQuotaCooldown(t *testing.T) {

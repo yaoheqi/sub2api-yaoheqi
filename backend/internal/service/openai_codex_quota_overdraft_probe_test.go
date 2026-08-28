@@ -322,6 +322,33 @@ func TestOpenAIFailoverSideEffectsLeavesTransient429ToNormalPolicy(t *testing.T)
 	require.Zero(t, repo.tempPauseCalls)
 }
 
+func TestOpenAIWSFailureSideEffectsPreservesOverdraftContext(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 14, 0, 0, 0, time.UTC)
+	account := newCodexOverdraftProbeTestAccount(now)
+	repo := &codexOverdraftProbeRepoStub{account: account}
+	cfg := &config.Config{Gateway: config.GatewayConfig{CodexQuotaOverdraftEnabled: true}}
+	svc := &OpenAIGatewayService{accountRepo: repo, cfg: cfg}
+	svc.codexQuotaOverdraft = &CodexQuotaOverdraftCoordinator{
+		accountRepo:  repo,
+		httpUpstream: &queuedHTTPUpstream{},
+		cfg:          cfg,
+		now:          func() time.Time { return now },
+	}
+	ctx := WithCodexQuotaOverdraftScheduling(context.Background())
+	markCodexQuotaOverdraftInjected(ctx, account.ID)
+	for _, payload := range [][]byte{
+		[]byte(`{"type":"error","error":{"type":"usage_limit_reached","message":"The usage limit has been reached"}}`),
+		[]byte(`{"type":"response.failed","response":{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached"}}}`),
+	} {
+		require.True(t, svc.handleOpenAIWSFailureAccountSideEffects(ctx, account, "gpt-5.4", nil, payload))
+		state, ok := codexQuotaOverdraftStateFromAccount(account)
+		require.True(t, ok)
+		require.Equal(t, codexQuotaOverdraftProbeFailed, state.Status)
+		require.Equal(t, "business_quota_limited", state.ReasonCode)
+	}
+	require.Equal(t, 1, repo.tempPauseCalls, "error and response.failed for one turn must converge to one pause")
+}
+
 func TestOpenAIPassthroughFailoverUsesCodexQuotaOverdraft(t *testing.T) {
 	now := time.Date(2026, time.August, 13, 14, 0, 0, 0, time.UTC)
 	account := newCodexOverdraftProbeTestAccount(now)

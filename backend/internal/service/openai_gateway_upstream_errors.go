@@ -473,14 +473,10 @@ func (s *OpenAIGatewayService) handleFailoverSideEffects(ctx context.Context, re
 	if resp == nil {
 		return false
 	}
-	// A Codex subscription-quota 429 may be recoverable through the overdraft
-	// cycle. Let the coordinator classify it before the generic account policy;
-	// its handled result must still force the caller down the failover path.
-	overdraftHandled := s.handleCodexQuotaOverdraftUpstream429(ctx, account, resp.StatusCode, resp.Header, responseBody, canonicalModel)
 	if len(canonicalModel) > 0 {
-		return s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, responseBody, canonicalModel[0]) || overdraftHandled
+		return s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, responseBody, canonicalModel[0])
 	}
-	return s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, responseBody) || overdraftHandled
+	return s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, responseBody)
 }
 
 func (s *OpenAIGatewayService) handleErrorResponse(
@@ -634,15 +630,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		reqModel, _, _ = extractOpenAIRequestMetaFromBody(requestBody)
 		reqModel = canonicalOpenAIAccountSchedulingModel(account, reqModel)
 	}
-	// Give the Codex overdraft coordinator first chance to classify an
-	// injected subscription-quota 429. The normal account error handler still
-	// runs for its existing rate-limit bookkeeping, while the coordinator's
-	// result forces failover when it has handled the quota cycle.
-	overdraftHandled := s.handleCodexQuotaOverdraftUpstream429(
-		ctx, account, resp.StatusCode, resp.Header, body, []string{reqModel},
-	)
 	shouldDisable := s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, reqModel)
-	shouldDisable = shouldDisable || overdraftHandled
 	kind := "http_error"
 	if shouldDisable {
 		kind = "failover"
@@ -835,13 +823,9 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 	if len(requestedModel) > 0 {
 		modelForCooldown = requestedModel[0]
 	}
-	overdraftHandled := s.handleCodexQuotaOverdraftUpstream429(
-		c.Request.Context(), account, resp.StatusCode, resp.Header, body, []string{modelForCooldown},
-	)
 	shouldDisable := s.handleOpenAIAccountUpstreamError(
 		c.Request.Context(), account, resp.StatusCode, resp.Header, body, modelForCooldown,
 	)
-	shouldDisable = shouldDisable || overdraftHandled
 	kind := "http_error"
 	if shouldDisable {
 		kind = "failover"

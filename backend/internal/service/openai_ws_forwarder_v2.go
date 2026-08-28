@@ -331,6 +331,10 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	); err != nil {
 		return nil, err
 	}
+	// Apply quota-overdraft mutation at the final request boundary. The
+	// prewarm helper may inspect the original payload, but only this frame is
+	// sent as the actual business request and must carry the injection marker.
+	payload = s.prepareCodexQuotaOverdraftPayload(ctx, account, payload)
 
 	if err := lease.WriteJSONWithContextTimeout(ctx, payload, s.openAIWSWriteTimeout()); err != nil {
 		lease.MarkBroken()
@@ -601,7 +605,14 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		if eventType == "error" {
 			s.handleOpenAIWSErrorEventTransientFailure(ctx, account, mappedModel, lease.HandshakeHeaders(), message)
 			errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(message)
-			s.persistOpenAIWSRateLimitSignal(ctx, account, lease.HandshakeHeaders(), message, errCodeRaw, errTypeRaw, errMsgRaw)
+			if isOpenAIWSRateLimitError(errCodeRaw, errTypeRaw, errMsgRaw) {
+				// A pre-output quota error immediately falls back from the WS
+				// transport. Use the request context so the overdraft injection
+				// evidence is available to the coordinator before that fallback.
+				s.handleOpenAIWSFailureAccountSideEffects(ctx, account, mappedModel, lease.HandshakeHeaders(), message)
+			} else {
+				s.persistOpenAIWSRateLimitSignal(ctx, account, lease.HandshakeHeaders(), message, errCodeRaw, errTypeRaw, errMsgRaw)
+			}
 			errMsg := strings.TrimSpace(errMsgRaw)
 			if errMsg == "" {
 				errMsg = "Upstream websocket error"

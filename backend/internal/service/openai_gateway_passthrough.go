@@ -903,11 +903,7 @@ func (s *OpenAIGatewayService) handleFailoverErrorResponsePassthrough(
 	logOpenAIInstructionsRequiredDebug(ctx, c, account, resp.StatusCode, upstreamMsg, requestBody, body)
 	reqModel, _, _ := extractOpenAIRequestMetaFromBody(requestBody)
 	canonicalModel := canonicalOpenAIAccountSchedulingModel(account, reqModel)
-	overdraftHandled := s.handleCodexQuotaOverdraftUpstream429(
-		ctx, account, resp.StatusCode, resp.Header, body, []string{canonicalModel},
-	)
 	shouldDisable := s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, canonicalModel)
-	shouldDisable = shouldDisable || overdraftHandled
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 		Platform:             account.Platform,
 		AccountID:            account.ID,
@@ -1352,7 +1348,7 @@ func openAIStreamFailedEventSemanticStatus(payload []byte, message string) int {
 		}
 	}
 	switch {
-	case strings.Contains(combined, "rate_limit"):
+	case isOpenAIWSRateLimitError(code, errType, message):
 		return http.StatusTooManyRequests
 	case strings.Contains(errType, "invalid_request"):
 		return http.StatusBadRequest
@@ -1578,6 +1574,29 @@ func (s *OpenAIGatewayService) handleOpenAIStreamTerminalAccountSideEffects(
 	headers http.Header,
 	canonicalModel ...string,
 ) (int, bool) {
+	ctx := context.Background()
+	if c != nil && c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	return s.handleOpenAIStreamTerminalAccountSideEffectsWithContext(
+		ctx, c, account, payload, message, headers, canonicalModel...,
+	)
+}
+
+// handleOpenAIStreamTerminalAccountSideEffectsWithContext is the context-aware
+// implementation used by websocket relays, where no gin.Context is available
+// at the point a terminal response.failed/error event is processed. Keeping the
+// request context here preserves the overdraft injection marker across that
+// boundary.
+func (s *OpenAIGatewayService) handleOpenAIStreamTerminalAccountSideEffectsWithContext(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	payload []byte,
+	message string,
+	headers http.Header,
+	canonicalModel ...string,
+) (int, bool) {
 	statusCode := openAIStreamFailureStatus(payload, message)
 	switch statusCode {
 	case http.StatusForbidden:
@@ -1586,9 +1605,8 @@ func (s *OpenAIGatewayService) handleOpenAIStreamTerminalAccountSideEffects(
 		}
 		fallthrough
 	case http.StatusUnauthorized, http.StatusTooManyRequests, 529:
-		ctx := context.Background()
-		if c != nil && c.Request != nil {
-			ctx = c.Request.Context()
+		if ctx == nil {
+			ctx = context.Background()
 		}
 		accountHeaders := headers
 		if statusCode == http.StatusTooManyRequests {
@@ -1597,11 +1615,8 @@ func (s *OpenAIGatewayService) handleOpenAIStreamTerminalAccountSideEffects(
 			// carried by a stream terminal event.
 			accountHeaders = nil
 		}
-		overdraftHandled := s.handleCodexQuotaOverdraftUpstream429(
-			ctx, account, statusCode, accountHeaders, payload, canonicalModel,
-		)
 		shouldDisable := s.handleOpenAIAccountUpstreamError(ctx, account, statusCode, accountHeaders, payload, canonicalModel...)
-		return statusCode, shouldDisable || overdraftHandled
+		return statusCode, shouldDisable
 	default:
 		return statusCode, false
 	}

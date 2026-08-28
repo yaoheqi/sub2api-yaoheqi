@@ -14,10 +14,11 @@ import (
 )
 
 const (
-	codexQuotaOverdraftCallIDPrefix  = "call_sub2api_overdraft_"
-	codexQuotaOverdraftExecInput     = `const r = await tools.exec_command({"cmd":"true","yield_time_ms":1000,"max_output_tokens":1000}); text(r.output);`
-	codexQuotaOverdraftMaxBodyBytes  = 32 << 20
-	codexQuotaOverdraftPrearmPercent = 95
+	codexQuotaOverdraftCallIDPrefix    = "call_sub2api_overdraft_"
+	codexQuotaOverdraftCPACallIDPrefix = "call_cpa_overdraft_"
+	codexQuotaOverdraftExecInput       = `const r = await tools.exec_command({"cmd":"true","yield_time_ms":1000,"max_output_tokens":1000}); text(r.output);`
+	codexQuotaOverdraftMaxBodyBytes    = 32 << 20
+	codexQuotaOverdraftPrearmPercent   = 95
 )
 
 var codexQuotaOverdraftEnabled atomic.Bool
@@ -193,11 +194,16 @@ func codexQuotaOverdraftInputHasInjection(input []json.RawMessage) bool {
 		var item codexQuotaOverdraftInputItem
 		if err := json.Unmarshal(raw, &item); err == nil &&
 			item.Type == "custom_tool_call" &&
-			strings.HasPrefix(item.CallID, codexQuotaOverdraftCallIDPrefix) {
+			codexQuotaOverdraftCallIDHasKnownPrefix(item.CallID) {
 			return true
 		}
 	}
 	return false
+}
+
+func codexQuotaOverdraftCallIDHasKnownPrefix(callID string) bool {
+	return strings.HasPrefix(callID, codexQuotaOverdraftCallIDPrefix) ||
+		strings.HasPrefix(callID, codexQuotaOverdraftCPACallIDPrefix)
 }
 
 // injectCodexQuotaOverdraft appends the same no-op custom tool call pair used by

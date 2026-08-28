@@ -98,6 +98,22 @@ func TestCodexQuotaOverdraftInjectionGuards(t *testing.T) {
 	require.Equal(t, oversized, svc.prepareCodexQuotaOverdraftBody(ctx, oauth, false, oversized))
 }
 
+func TestCodexQuotaOverdraftRecognizesLegacyCPAInjection(t *testing.T) {
+	legacy := []json.RawMessage{
+		json.RawMessage(`{"type":"message","role":"user"}`),
+		json.RawMessage(`{"type":"custom_tool_call","name":"exec","call_id":"call_cpa_overdraft_legacy"}`),
+	}
+	modern := []json.RawMessage{
+		json.RawMessage(`{"type":"message","role":"user"}`),
+		json.RawMessage(`{"type":"custom_tool_call","name":"exec","call_id":"call_sub2api_overdraft_modern"}`),
+	}
+	require.True(t, codexQuotaOverdraftInputHasInjection(legacy))
+	require.True(t, codexQuotaOverdraftInputHasInjection(modern))
+	require.False(t, codexQuotaOverdraftInputHasInjection([]json.RawMessage{
+		json.RawMessage(`{"type":"custom_tool_call","call_id":"call_other_tool"}`),
+	}))
+}
+
 func TestCodexQuotaOverdraftSchedulingDoesNotBypassThresholdBelowPrearm(t *testing.T) {
 	t.Cleanup(func() { SetCodexQuotaOverdraftEnabled(false) })
 	SetCodexQuotaOverdraftEnabled(true)

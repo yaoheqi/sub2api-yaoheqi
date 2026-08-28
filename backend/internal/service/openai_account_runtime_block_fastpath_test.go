@@ -122,24 +122,6 @@ func TestOpenAIStream429IgnoresSuccessfulQuotaSnapshotHeaders(t *testing.T) {
 	}
 }
 
-func TestOpenAIHTTP429StillUsesQuotaResetHeaders(t *testing.T) {
-	svc := &OpenAIGatewayService{rateLimitService: &RateLimitService{}}
-	account := &Account{ID: 422, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
-	svc.openaiOAuth429RetryStartedAt.Store(account.ID, time.Now().Add(-openAIOAuth429RetryWindow-time.Second))
-	headers := http.Header{}
-	headers.Set("x-codex-primary-used-percent", "37")
-	headers.Set("x-codex-primary-reset-after-seconds", "604800")
-	headers.Set("x-codex-primary-window-minutes", "10080")
-
-	svc.markOpenAIOAuth429RateLimited(context.Background(), account, headers, nil)
-
-	value, ok := svc.openaiAccountRuntimeBlockUntil.Load(account.ID)
-	require.True(t, ok)
-	blockedUntil, ok := value.(time.Time)
-	require.True(t, ok)
-	require.Greater(t, time.Until(blockedUntil), 6*24*time.Hour, "real HTTP 429 must retain the upstream quota reset")
-}
-
 func TestOpenAI429RetryDelayHonorsBoundedRetryAfter(t *testing.T) {
 	deadline := time.Now().Add(openAIOAuth429RetryWindow)
 	require.Equal(t, openAIOAuth429RetryDelay, openAIOAuth429SameAccountRetryDelay(nil, deadline))

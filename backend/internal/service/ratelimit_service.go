@@ -1052,7 +1052,7 @@ func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account
 	// the tested endpoint; it does not make every endpoint supported. Unless the
 	// response contains an explicit billing marker, keep this request-scoped and
 	// do not put a usable third-party key into the account cooldown state.
-	if account.Type == AccountTypeAPIKey {
+	if account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey {
 		text := strings.ToLower(strings.TrimSpace(upstreamMsg + "\n" + string(responseBody)))
 		if !containsOpenAI403BillingMarker(text) {
 			slog.Warn(

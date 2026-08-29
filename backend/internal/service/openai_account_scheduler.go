@@ -390,25 +390,6 @@ func (s *defaultOpenAIAccountScheduler) Select(
 	defer func() {
 		decision.LatencyMs = time.Since(start).Milliseconds()
 		s.metrics.recordSelect(decision)
-		// Keep scheduling decisions observable without exposing credentials or
-		// request payloads.  Account IDs/types are internal routing metadata.
-		slog.Info("openai.account_schedule_decision",
-			"layer", decision.Layer,
-			"sticky_previous_hit", decision.StickyPreviousHit,
-			"sticky_session_hit", decision.StickySessionHit,
-			"candidate_count", decision.CandidateCount,
-			"top_k", decision.TopK,
-			"load_skew", decision.LoadSkew,
-			"selected_account_id", decision.SelectedAccountID,
-			"selected_account_type", decision.SelectedAccountType,
-			"selected_account_priority", decision.SelectedAccountPriority,
-			"selected_group_priority", decision.SelectedGroupPriority,
-			"selected_load_factor", decision.SelectedLoadFactor,
-			"selected_concurrency", decision.SelectedConcurrency,
-			"selected_overdraft", decision.SelectedOverdraft,
-			"selected_overdraft_status", decision.SelectedOverdraftStatus,
-			"latency_ms", decision.LatencyMs,
-		)
 	}()
 
 	previousResponseID := strings.TrimSpace(req.PreviousResponseID)
@@ -2343,8 +2324,41 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 	platform string,
 	previousResponseCanMove bool,
 	useUpstreamTokenCost bool,
-) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-	selection, decision, err := s.selectAccountWithSchedulerOnce(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost)
+) (selection *AccountSelectionResult, decision OpenAIAccountScheduleDecision, err error) {
+	start := time.Now()
+	defer func() {
+		if selection != nil && selection.Account != nil {
+			populateOpenAIAccountScheduleDecision(&decision, selection.Account, groupID)
+		}
+		if decision.LatencyMs <= 0 {
+			decision.LatencyMs = time.Since(start).Milliseconds()
+		}
+		// Log once at the public scheduling boundary so both legacy and advanced
+		// implementations expose the same routing metadata at info level.
+		slog.Info("openai.account_schedule_decision",
+			"group_id", derefGroupID(groupID),
+			"platform", NormalizeOpenAICompatiblePlatform(platform),
+			"model", requestedModel,
+			"layer", decision.Layer,
+			"selection_error", err != nil,
+			"sticky_previous_hit", decision.StickyPreviousHit,
+			"sticky_session_hit", decision.StickySessionHit,
+			"candidate_count", decision.CandidateCount,
+			"top_k", decision.TopK,
+			"load_skew", decision.LoadSkew,
+			"selected_account_id", decision.SelectedAccountID,
+			"selected_account_type", decision.SelectedAccountType,
+			"selected_account_priority", decision.SelectedAccountPriority,
+			"selected_group_priority", decision.SelectedGroupPriority,
+			"selected_load_factor", decision.SelectedLoadFactor,
+			"selected_concurrency", decision.SelectedConcurrency,
+			"selected_overdraft", decision.SelectedOverdraft,
+			"selected_overdraft_status", decision.SelectedOverdraftStatus,
+			"latency_ms", decision.LatencyMs,
+		)
+	}()
+
+	selection, decision, err = s.selectAccountWithSchedulerOnce(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost)
 	if err == nil || openAIProxyStreamQuarantineBypassed(ctx) {
 		return selection, decision, err
 	}

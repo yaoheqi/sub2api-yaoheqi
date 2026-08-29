@@ -464,6 +464,11 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabledUsesLega
 	require.Equal(t, int64(36002), selection.Account.ID)
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
 	require.False(t, decision.StickyPreviousHit)
+	require.Equal(t, int64(36002), decision.SelectedAccountID)
+	require.Equal(t, AccountTypeAPIKey, decision.SelectedAccountType)
+	require.Equal(t, 0, decision.SelectedAccountPriority)
+	require.Equal(t, 1, decision.SelectedLoadFactor)
+	require.Equal(t, 1, decision.SelectedConcurrency)
 }
 
 // Regression: the legacy load-batch path had two bare ErrNoAvailableAccounts

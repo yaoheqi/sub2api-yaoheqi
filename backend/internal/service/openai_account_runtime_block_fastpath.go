@@ -15,6 +15,7 @@ const (
 	openAIOAuth429RetryWindow             = 2 * time.Minute
 	openAIOAuth429RetryDelay              = 500 * time.Millisecond
 	openAIOAuth429MaxRetryDelay           = 8 * time.Second
+	openAIOAuth429TransientCooldown       = 5 * time.Second
 	openAIOAuth429MaxAccountAttempts      = 3
 	openAIStopSchedulingBridgeCooldown    = 2 * time.Minute
 	openAIOAuth429StormWindow             = 10 * time.Second
@@ -183,7 +184,15 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	modelTempMatched := statusCode != http.StatusUnauthorized && tempUnschedulableModel(stateCtx, nil) != "" &&
 		len(matchTempUnschedulableRules(account, statusCode, responseBody)) > 0
 	if shouldDisable && !modelTempMatched {
-		s.BlockAccountScheduling(account, time.Time{}, "upstream_disable")
+		// HandleUpstreamError may have just installed a bounded account pause
+		// (currently OpenAI OAuth/SetupToken 503). A zero deadline means the
+		// generic bridge cooldown (two minutes), which would silently widen the
+		// intended 30-second quarantine and make recovery/overdraft probing less
+		// responsive. Keep the explicit temporary pause when it is present.
+		if account.TempUnschedulableUntil == nil || !account.TempUnschedulableUntil.After(time.Now()) ||
+			account.TempUnschedulableReason != openAIOAuth503TempReason {
+			s.BlockAccountScheduling(account, time.Time{}, "upstream_disable")
+		}
 	}
 	// Pool-mode retryable upstream errors are already bounded by the request-local
 	// same-account retry budget. Recording the generic account+model transient
@@ -238,6 +247,19 @@ func (s *OpenAIGatewayService) markOpenAIOAuth429RateLimited(ctx context.Context
 	s.recordOpenAIOAuth429()
 	disposition, resetAt := classifyOpenAIOAuth429(headers, responseBody)
 	if disposition == openAIOAuth429Transient && s.openAIOAuth429RetryWindowActive(account) {
+		// Keep a short scheduler-only quarantine while the current request uses
+		// its bounded same-account retry. Do not persist a guessed DB reset time.
+		deadline := s.openAIOAuth429RetryDeadline(account)
+		cooldown := openAIOAuth429TransientCooldown
+		if retryDelay := openAIOAuth429SameAccountRetryDelay(headers, deadline); retryDelay > cooldown {
+			cooldown = retryDelay
+		}
+		until := time.Now().Add(cooldown)
+		if !deadline.IsZero() && until.After(deadline) {
+			until = deadline
+		}
+		s.setOpenAIOAuth429TransientBlock(account.ID, until)
+		slog.Info("openai_oauth_429_transient_runtime_block", "account_id", account.ID, "until", until, "retry_deadline", deadline)
 		return
 	}
 
@@ -396,6 +418,7 @@ func (s *OpenAIGatewayService) ClearAccountSchedulingBlock(accountID int64) {
 	mu.Lock()
 	defer mu.Unlock()
 	s.openaiAccountRuntimeBlockUntil.Delete(accountID)
+	s.openaiOAuth429TransientUntil.Delete(accountID)
 	s.openaiOAuth429RetryStartedAt.Delete(accountID)
 	s.openaiAccountRuntimeBlockGeneration.Store(accountID, s.openaiAccountRuntimeBlockSequence.Add(1))
 }
@@ -487,7 +510,41 @@ func (s *OpenAIGatewayService) isOpenAIAccountModelRuntimeBlocked(account *Accou
 }
 
 func (s *OpenAIGatewayService) isOpenAIAccountRequestRuntimeBlocked(account *Account, requestedModel string) bool {
-	return s != nil && (s.isOpenAIAccountRuntimeBlocked(account) || s.isOpenAIAccountModelRuntimeBlocked(account, requestedModel))
+	return s != nil && (s.isOpenAIAccountRuntimeBlocked(account) || s.isOpenAIOAuth429TransientlyBlocked(account) || s.isOpenAIAccountModelRuntimeBlocked(account, requestedModel))
+}
+
+func (s *OpenAIGatewayService) setOpenAIOAuth429TransientBlock(accountID int64, until time.Time) {
+	if s == nil || accountID <= 0 || until.IsZero() {
+		return
+	}
+	mu := s.openAIAccountRuntimeBlockLock(accountID)
+	mu.Lock()
+	defer mu.Unlock()
+	if current, ok := s.openaiOAuth429TransientUntil.Load(accountID); ok {
+		if currentUntil, ok := current.(time.Time); ok && currentUntil.After(until) {
+			return
+		}
+	}
+	s.openaiOAuth429TransientUntil.Store(accountID, until)
+}
+
+func (s *OpenAIGatewayService) isOpenAIOAuth429TransientlyBlocked(account *Account) bool {
+	if s == nil || !isOpenAIOAuthAccount(account) {
+		return false
+	}
+	mu := s.openAIAccountRuntimeBlockLock(account.ID)
+	mu.Lock()
+	defer mu.Unlock()
+	value, ok := s.openaiOAuth429TransientUntil.Load(account.ID)
+	if !ok {
+		return false
+	}
+	until, ok := value.(time.Time)
+	if !ok || until.IsZero() || !time.Now().Before(until) {
+		s.openaiOAuth429TransientUntil.Delete(account.ID)
+		return false
+	}
+	return true
 }
 
 func (s *OpenAIGatewayService) recordOpenAIOAuth429() {

@@ -41,6 +41,7 @@ func TestOpenAI429FastPath_KeepsOAuthAccountSchedulableDuringRetryWindow(t *test
 	require.False(t, shouldDisable)
 	require.False(t, apiKeyShouldDisable)
 	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+	require.True(t, svc.isOpenAIAccountRequestRuntimeBlocked(account, "gpt-5.5"), "concurrent requests must observe the transient OAuth 429 quarantine")
 	require.True(t, svc.isOpenAIAccountRuntimeBlocked(apiKeyAccount), "API-key 429 keeps the existing scheduler cooldown behavior")
 	require.Equal(t, 1, repo.setRateLimitedCalls, "only the API-key 429 should persist a scheduler block")
 	require.True(t, svc.shouldRetryOpenAIOAuth429OnSameAccount(account, http.StatusTooManyRequests, false))
@@ -49,6 +50,27 @@ func TestOpenAI429FastPath_KeepsOAuthAccountSchedulableDuringRetryWindow(t *test
 	require.False(t, svc.shouldRetryOpenAIOAuth429OnSameAccount(grokOAuthAccount, http.StatusTooManyRequests, false))
 	require.WithinDuration(t, time.Now().Add(openAIOAuth429RetryWindow), svc.openAIOAuth429RetryDeadline(account), time.Second)
 	require.WithinDuration(t, time.Now().Add(openAIOAuth429RetryWindow), svc.openAIOAuth429RetryDeadline(setupTokenAccount), time.Second)
+}
+
+func TestOpenAI429TransientRuntimeBlock_ClearedAfterSuccess(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{ID: 425, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+
+	svc.markOpenAIOAuth429RateLimited(context.Background(), account, http.Header{}, nil)
+	require.True(t, svc.isOpenAIAccountRequestRuntimeBlocked(account, "gpt-5.5"))
+	require.True(t, svc.shouldRetryOpenAIOAuth429OnSameAccount(account, http.StatusTooManyRequests, false))
+
+	svc.ReportOpenAIAccountScheduleResult(account, "gpt-5.5", true, nil)
+	require.False(t, svc.isOpenAIAccountRequestRuntimeBlocked(account, "gpt-5.5"))
+}
+
+func TestOpenAI429TransientRuntimeBlock_ExpiresWithoutPersistentBlock(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{ID: 426, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	svc.setOpenAIOAuth429TransientBlock(account.ID, time.Now().Add(-time.Second))
+
+	require.False(t, svc.isOpenAIAccountRequestRuntimeBlocked(account, "gpt-5.5"))
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account), "transient expiry must not become an account-level block")
 }
 
 func TestOpenAI429FastPath_BlocksOAuthOnlyAfterRetryWindow(t *testing.T) {

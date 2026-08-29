@@ -603,6 +603,11 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 		if openAIStreamFailedEventShouldFailover(payload, message) {
 			return nil, s.newOpenAIStreamFailoverError(c, account, false, requestID, payload, message, resp.Header)
 		}
+		// The terminal event is transported inside an HTTP 200 SSE response;
+		// update account/model scheduling state explicitly before returning the
+		// Anthropic-compatible error. The shared helper leaves request-scoped
+		// policy denials untouched.
+		s.handleOpenAIStreamTerminalAccountSideEffects(c, account, payload, message, resp.Header, upstreamModel)
 		message = s.recordOpenAIStreamUpstreamError(c, account, false, requestID, "http_error", payload, message)
 		// 统一走语义状态推断 + body 归一化（与 /v1/responses 路径一致），
 		// 使按错误码配置的透传规则可命中。
@@ -913,6 +918,14 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	var streamFailoverErr error
 	var streamNonFailoverErr error
 	terminalEventType := ""
+	terminalAccountSideEffectsApplied := false
+	applyTerminalAccountSideEffects := func(payload []byte, message string) {
+		if terminalAccountSideEffectsApplied || !openAIStreamTerminalAccountSideEffectsApplicable(payload, message) {
+			return
+		}
+		s.handleOpenAIStreamTerminalAccountSideEffects(c, account, payload, message, resp.Header, upstreamModel)
+		terminalAccountSideEffectsApplied = true
+	}
 	searchCount := 0
 	streamSearchSeen := make(map[string]struct{})
 	countSearch := account != nil && account.IsGrok()
@@ -1037,6 +1050,10 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 					streamFailoverErr = s.newOpenAIStreamFailoverError(c, account, false, requestID, payloadBytes, message, resp.Header)
 					return true
 				}
+				// Once output has started, failover would splice two protocols. Still
+				// persist account health for credential/rate-limit/upstream failures
+				// before writing the Anthropic error event.
+				applyTerminalAccountSideEffects(payloadBytes, message)
 				message = s.recordOpenAIStreamUpstreamError(c, account, false, requestID, "http_error", payloadBytes, message)
 				errStatus, errType, errMsg := http.StatusBadGateway, "api_error", message
 				// 统一走语义状态推断 + body 归一化（与 /v1/responses 路径一致），

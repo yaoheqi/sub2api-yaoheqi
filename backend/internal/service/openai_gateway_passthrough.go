@@ -792,6 +792,14 @@ func shouldFailoverOpenAIPassthroughResponse(account *Account, statusCode int, r
 		return true
 	}
 	if account == nil || account.Type != AccountTypeAPIKey {
+		// ChatGPT/Codex OAuth-like credentials are account-scoped on a generic
+		// 503: rotate to another credential after installing the bounded health
+		// pause. Request-scoped capacity shed was excluded above, so this does
+		// not fan out a provider-wide overload into account quarantine.
+		if account != nil && account.Platform == PlatformOpenAI && account.IsOpenAIOAuthLike() &&
+			statusCode == http.StatusServiceUnavailable {
+			return true
+		}
 		return false
 	}
 	switch statusCode {
@@ -1340,10 +1348,16 @@ func openAIStreamFailedEventSemanticStatus(payload []byte, message string) int {
 	if errType == "" {
 		errType = strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "error.type").String()))
 	}
-	combined := strings.TrimSpace(errType + " " + code + " " + strings.ToLower(strings.TrimSpace(message)))
-	for _, path := range []string{"response.error.status_code", "error.status_code", "status_code"} {
-		if status := int(gjson.GetBytes(payload, path).Int()); status == http.StatusUnauthorized ||
-			status == http.StatusForbidden || status == http.StatusTooManyRequests || status == 529 {
+	combined := strings.ToLower(strings.TrimSpace(strings.Join([]string{
+		errType,
+		code,
+		message,
+		gjson.GetBytes(payload, "response.error.message").String(),
+		gjson.GetBytes(payload, "error.message").String(),
+		gjson.GetBytes(payload, "message").String(),
+	}, " ")))
+	for _, path := range []string{"response.error.status_code", "response.error.status", "error.status_code", "error.status", "status_code", "status"} {
+		if status := int(gjson.GetBytes(payload, path).Int()); status >= http.StatusBadRequest && status <= 599 {
 			return status
 		}
 	}
@@ -1360,9 +1374,161 @@ func openAIStreamFailedEventSemanticStatus(payload []byte, message string) int {
 		return http.StatusForbidden
 	case isOpenAIUpstreamCapacityShedEvent(payload):
 		return http.StatusServiceUnavailable
+	case strings.Contains(code, "service_unavailable") || strings.Contains(code, "temporarily_unavailable") ||
+		strings.Contains(errType, "service_unavailable") || strings.Contains(errType, "temporarily_unavailable") ||
+		strings.Contains(combined, "service unavailable") || strings.Contains(combined, "temporarily unavailable"):
+		return http.StatusServiceUnavailable
+	case strings.Contains(code, "server_error") || strings.Contains(code, "internal_error") ||
+		strings.Contains(code, "upstream_error") || strings.Contains(errType, "server_error") ||
+		strings.Contains(errType, "internal_error") || strings.Contains(errType, "upstream_error"):
+		// These labels are also used for deterministic request failures and
+		// transport wrappers. Only promote them to a semantic 500 when the
+		// human-readable message carries a transient service signal; otherwise
+		// retain the conservative 502 fallback.
+		if openAIStreamFailureHasTransientMessage(payload, message) {
+			return http.StatusInternalServerError
+		}
 	default:
 		return http.StatusBadGateway
 	}
+	return http.StatusBadGateway
+}
+
+// openAIStreamFailedEventExplicitStatus reports whether a terminal event
+// contains an account/upstream health status rather than merely falling back to
+// the generic 502 representation.  The distinction matters for HTTP 200 SSE:
+// an unknown failed envelope must not cool an account or trigger failover just
+// because its client-facing status is normalized to Bad Gateway.
+func openAIStreamFailedEventExplicitStatus(payload []byte, message string) (int, bool) {
+	if len(bytes.TrimSpace(payload)) == 0 || !gjson.ValidBytes(payload) {
+		return 0, false
+	}
+	for _, path := range []string{
+		"response.error.status_code",
+		"response.error.status",
+		"response.status_code",
+		"response.status",
+		"error.status_code",
+		"error.status",
+		"status_code",
+		"status",
+	} {
+		value := gjson.GetBytes(payload, path)
+		if !value.Exists() {
+			continue
+		}
+		status := int(value.Int())
+		if status >= http.StatusBadRequest && status <= 599 {
+			return status, true
+		}
+	}
+
+	code := openAIStreamFailedEventErrorCode(payload)
+	errType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "response.error.type").String()))
+	if errType == "" {
+		errType = strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "error.type").String()))
+	}
+	combined := strings.ToLower(strings.TrimSpace(strings.Join([]string{
+		errType,
+		code,
+		message,
+		gjson.GetBytes(payload, "response.error.message").String(),
+		gjson.GetBytes(payload, "error.message").String(),
+		gjson.GetBytes(payload, "message").String(),
+	}, " ")))
+
+	if isOpenAIWSRateLimitError(code, errType, combined) {
+		return http.StatusTooManyRequests, true
+	}
+	if isOpenAIUpstreamCapacityShedEvent(payload) {
+		return http.StatusServiceUnavailable, true
+	}
+	if strings.Contains(combined, "service_unavailable") ||
+		strings.Contains(combined, "temporarily_unavailable") ||
+		strings.Contains(combined, "service temporarily unavailable") ||
+		strings.Contains(combined, "service unavailable") {
+		return http.StatusServiceUnavailable, true
+	}
+	// `server_error`/`upstream_error` are envelope labels, not proof that the
+	// account or upstream is unhealthy. Providers reuse them for deterministic
+	// request failures (for example tool validation). Only classify them as an
+	// explicit transient 5xx when the accompanying message contains a known
+	// transient signal; the code/type fields are deliberately excluded from
+	// this check so `upstream_error` cannot satisfy its own predicate.
+	if (strings.Contains(combined, "server_error") ||
+		strings.Contains(combined, "internal_error") ||
+		strings.Contains(combined, "internal server error") ||
+		strings.Contains(combined, "upstream_error")) &&
+		!openAIStreamFailureHasNonRetryableMarker(payload, message) &&
+		openAIStreamFailureHasTransientMessage(payload, message) {
+		return http.StatusInternalServerError, true
+	}
+	return 0, false
+}
+
+// openAIStreamFailureHasTransientMessage looks only at human-readable error
+// text. Error codes/types such as `upstream_error` and `server_error` are
+// envelope labels used for both transient and deterministic failures, so they
+// must not make an otherwise opaque message eligible for failover.
+func openAIStreamFailureHasTransientMessage(payload []byte, message string) bool {
+	text := strings.ToLower(strings.TrimSpace(strings.Join([]string{
+		message,
+		gjson.GetBytes(payload, "response.error.message").String(),
+		gjson.GetBytes(payload, "error.message").String(),
+		gjson.GetBytes(payload, "message").String(),
+	}, " ")))
+	if text == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"temporary",
+		"temporarily",
+		"unavailable",
+		"overload",
+		"overloaded",
+		"capacity",
+		"try again",
+		"please retry",
+		"retry later",
+		"timed out",
+		"timeout",
+		"gateway",
+		"internal error",
+		"processing failed",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func openAIStreamFailureHasNonRetryableMarker(payload []byte, message string) bool {
+	combined := strings.ToLower(strings.TrimSpace(strings.Join([]string{
+		message,
+		gjson.GetBytes(payload, "response.error.message").String(),
+		gjson.GetBytes(payload, "error.message").String(),
+		gjson.GetBytes(payload, "message").String(),
+		gjson.GetBytes(payload, "response.error.code").String(),
+		gjson.GetBytes(payload, "error.code").String(),
+		gjson.GetBytes(payload, "response.error.type").String(),
+		gjson.GetBytes(payload, "error.type").String(),
+	}, " ")))
+	for _, marker := range []string{
+		"invalid_request",
+		"content_policy",
+		"policy",
+		"safety",
+		"high-risk cyber",
+		"not allowed",
+		"access denied",
+		"violat",
+	} {
+		if strings.Contains(combined, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func openAIStreamFailureStatus(payload []byte, message string) int {
@@ -1373,8 +1539,10 @@ func openAIStreamFailureStatus(payload []byte, message string) int {
 	switch semanticStatus {
 	case http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests, 529:
 		return semanticStatus
-	case http.StatusServiceUnavailable:
-		if isOpenAIUpstreamCapacityShedEvent(payload) {
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable:
+		return semanticStatus
+	default:
+		if semanticStatus >= 500 && semanticStatus <= 599 {
 			return semanticStatus
 		}
 	}
@@ -1507,8 +1675,20 @@ func openAIStreamFailedEventShouldFailover(payload []byte, message string) bool 
 	if semanticStatus == http.StatusTooManyRequests {
 		return true
 	}
+	// Preserve the established request-scoped capacity/processing retry rule
+	// before considering generic 5xx normalization. These errors often carry
+	// `error.type=invalid_request_error` even though they are retryable.
 	if isOpenAITransientProcessingError(http.StatusBadRequest, message, payload) {
 		return true
+	}
+	if semanticStatus >= http.StatusInternalServerError && semanticStatus <= 599 {
+		if openAIStreamFailureHasNonRetryableMarker(payload, message) {
+			return false
+		}
+		_, explicit := openAIStreamFailedEventExplicitStatus(payload, message)
+		if explicit {
+			return true
+		}
 	}
 	code := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "response.error.code").String()))
 	if code == "" {
@@ -1522,19 +1702,8 @@ func openAIStreamFailedEventShouldFailover(payload []byte, message string) bool 
 	if combined == "" {
 		return true
 	}
-	nonRetryableMarkers := []string{
-		"invalid_request",
-		"content_policy",
-		"policy",
-		"safety",
-		"high-risk cyber",
-		"not allowed",
-		"violat",
-	}
-	for _, marker := range nonRetryableMarkers {
-		if strings.Contains(combined, marker) {
-			return false
-		}
+	if openAIStreamFailureHasNonRetryableMarker(payload, message) {
+		return false
 	}
 	return true
 }
@@ -1549,14 +1718,23 @@ func openAIStreamErrorEventShouldFailover(payload []byte, message string) bool {
 	if isOpenAIUpstreamAccessStateError(message, payload) {
 		return true
 	}
-	switch openAIStreamFailedEventSemanticStatus(payload, message) {
+	semanticStatus := openAIStreamFailedEventSemanticStatus(payload, message)
+	switch semanticStatus {
 	case http.StatusForbidden:
 		return openAIStream403AccountFailure(payload, message)
 	case http.StatusUnauthorized, http.StatusTooManyRequests, 529:
 		return true
-	}
-	if isOpenAITransientProcessingError(http.StatusBadRequest, message, payload) {
-		return true
+	default:
+		if isOpenAITransientProcessingError(http.StatusBadRequest, message, payload) {
+			return true
+		}
+		if semanticStatus >= http.StatusInternalServerError && semanticStatus <= 599 {
+			if openAIStreamFailureHasNonRetryableMarker(payload, message) {
+				return false
+			}
+			_, explicit := openAIStreamFailedEventExplicitStatus(payload, message)
+			return explicit
+		}
 	}
 	combined := strings.ToLower(strings.TrimSpace(message + " " +
 		gjson.GetBytes(payload, "error.message").String() + " " +
@@ -1598,6 +1776,11 @@ func (s *OpenAIGatewayService) handleOpenAIStreamTerminalAccountSideEffectsWithC
 	canonicalModel ...string,
 ) (int, bool) {
 	statusCode := openAIStreamFailureStatus(payload, message)
+	// Cyber/policy responses are request-scoped and must never mutate account
+	// scheduling state, even when they are transported in a terminal event.
+	if hit, _, _ := detectOpenAICyberPolicy(payload); hit {
+		return statusCode, false
+	}
 	switch statusCode {
 	case http.StatusForbidden:
 		if !openAIStream403AccountFailure(payload, message) {
@@ -1618,7 +1801,42 @@ func (s *OpenAIGatewayService) handleOpenAIStreamTerminalAccountSideEffectsWithC
 		shouldDisable := s.handleOpenAIAccountUpstreamError(ctx, account, statusCode, accountHeaders, payload, canonicalModel...)
 		return statusCode, shouldDisable
 	default:
+		// Streams carry semantic failures inside an HTTP 200 envelope. Preserve
+		// the same transient account cooldown behavior as ordinary HTTP 5xx
+		// responses when the terminal event exposes an explicit 5xx status (or a
+		// recognized server/unavailable error code mapped by openAIStreamFailureStatus).
+		if statusCode >= http.StatusInternalServerError && statusCode <= 599 {
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			shouldDisable := s.handleOpenAIAccountUpstreamError(ctx, account, statusCode, headers, payload, canonicalModel...)
+			return statusCode, shouldDisable
+		}
 		return statusCode, false
+	}
+}
+
+// openAIStreamTerminalAccountSideEffectsApplicable reports whether a terminal
+// event contains account-scoped health evidence. Callers use it to settle
+// error/response.failed pairs exactly once while leaving request-scoped policy
+// failures untouched.
+func openAIStreamTerminalAccountSideEffectsApplicable(payload []byte, message string) bool {
+	if hit, _, _ := detectOpenAICyberPolicy(payload); hit {
+		return false
+	}
+	statusCode := openAIStreamFailureStatus(payload, message)
+	switch statusCode {
+	case http.StatusUnauthorized, http.StatusTooManyRequests, 529:
+		return true
+	case http.StatusForbidden:
+		return openAIStream403AccountFailure(payload, message)
+	default:
+		if statusCode < http.StatusInternalServerError || statusCode > 599 ||
+			openAIStreamFailureHasNonRetryableMarker(payload, message) {
+			return false
+		}
+		_, explicit := openAIStreamFailedEventExplicitStatus(payload, message)
+		return explicit
 	}
 }
 
@@ -1801,6 +2019,14 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	responseFailedPending := false
 	var bareErrorPayload []byte
 	bareErrorAccountSideEffectsPending := false
+	terminalAccountSideEffectsApplied := false
+	applyTerminalAccountSideEffects := func(payload []byte, message string) {
+		if terminalAccountSideEffectsApplied || !openAIStreamTerminalAccountSideEffectsApplicable(payload, message) {
+			return
+		}
+		s.handleOpenAIStreamTerminalAccountSideEffects(c, account, payload, message, resp.Header, mappedModel)
+		terminalAccountSideEffectsApplied = true
+	}
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	// pendingLines 在首个可见输出前保留前导事件，确保无输出失败仍可安全 failover。
 	pendingLines := make([]string, 0, 8)
@@ -1831,7 +2057,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			return
 		}
 		if bareErrorAccountSideEffectsPending {
-			s.handleOpenAIStreamTerminalAccountSideEffects(c, account, bareErrorPayload, failedMessage, resp.Header)
+			applyTerminalAccountSideEffects(bareErrorPayload, failedMessage)
 			bareErrorAccountSideEffectsPending = false
 		}
 		if clientDisconnected || !writePendingLines() {
@@ -1927,6 +2153,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				if codexFailureTerminal && eventType == "error" {
 					sawBareError = true
 					bareErrorPayload = append(bareErrorPayload[:0], dataBytes...)
+					bareErrorAccountSideEffectsPending = true
 					suppressCurrentEvent = true
 				} else if codexFailureTerminal && eventType == "response.failed" {
 					sawResponseFailed = true
@@ -1962,8 +2189,15 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 						// Wait for the authoritative response.failed before mutating
 						// account health; EOF synthesis applies the pending effect.
 						bareErrorAccountSideEffectsPending = true
+					} else if codexFailureTerminal && eventType == "response.failed" && bareErrorAccountSideEffectsPending {
+						// Some upstreams carry the status only on the preceding bare
+						// error. Settle that payload first, then use response.failed as
+						// a fallback without duplicating the transition.
+						applyTerminalAccountSideEffects(bareErrorPayload, failedMessage)
+						applyTerminalAccountSideEffects(dataBytes, failedMessage)
+						bareErrorAccountSideEffectsPending = false
 					} else {
-						s.handleOpenAIStreamTerminalAccountSideEffects(c, account, dataBytes, failedMessage, resp.Header)
+						applyTerminalAccountSideEffects(dataBytes, failedMessage)
 						bareErrorAccountSideEffectsPending = false
 					}
 				}
@@ -1979,6 +2213,15 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 					if shouldFailover {
 						return resultWithUsage(),
 							s.newOpenAIStreamFailoverError(c, account, true, upstreamRequestID, dataBytes, failedMessage, resp.Header)
+					}
+					if !cyberHit && !(codexFailureTerminal && eventType == "error") {
+						if codexFailureTerminal && eventType == "response.failed" && bareErrorAccountSideEffectsPending {
+							applyTerminalAccountSideEffects(bareErrorPayload, failedMessage)
+						}
+						applyTerminalAccountSideEffects(dataBytes, failedMessage)
+						if codexFailureTerminal && eventType == "response.failed" {
+							bareErrorAccountSideEffectsPending = false
+						}
 					}
 					if !cyberHit && !sawBareError {
 						if status, errType, errMsg, matched := applyOpenAIStreamFailedErrorPassthroughRule(c, account.Platform, dataBytes, failedMessage); matched {
@@ -2179,6 +2422,17 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 		// 兜底：尝试从 SSE 文本中解析 usage
 		usage = s.parseSSEUsageFromBody(string(body))
 	}
+	if openAINonStreamingResponseFailed(body) {
+		message := extractOpenAISSEErrorMessage(body)
+		if message == "" {
+			message = "Upstream response failed"
+		}
+		if compactErr := newOpenAICompactFallbackSignal(c, body, message); compactErr != nil {
+			return nil, compactErr
+		}
+		s.handleOpenAIStreamTerminalAccountSideEffects(c, account, body, message, resp.Header, mappedModel)
+		return nil, s.writeOpenAINonStreamingProtocolError(resp, c, message)
+	}
 	logOpenAISuccessMissingUsage(ctx, c, account, resp, usage, "json", false)
 
 	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -2223,6 +2477,7 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 		if msg == "" {
 			msg = "Upstream compact response failed"
 		}
+		s.handleOpenAIStreamTerminalAccountSideEffects(c, account, terminalPayload, msg, resp.Header, mappedModel)
 		if compactErr := newOpenAICompactFallbackSignal(c, terminalPayload, msg); compactErr != nil {
 			return nil, compactErr
 		}

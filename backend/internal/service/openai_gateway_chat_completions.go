@@ -509,6 +509,12 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 		if openAIStreamFailedEventShouldFailover(payload, message) {
 			return nil, s.newOpenAIStreamFailoverError(c, account, false, requestID, payload, message, resp.Header)
 		}
+		// Responses terminal failures are carried over an HTTP 200 stream, so the
+		// ordinary HTTP error path never gets a chance to update account health.
+		// Apply the same account/model scheduling transition before returning the
+		// compat-format error. Request-scoped policy failures are ignored by the
+		// shared helper.
+		s.handleOpenAIStreamTerminalAccountSideEffects(c, account, payload, message, resp.Header, upstreamModel)
 		message = s.recordOpenAIStreamUpstreamError(c, account, false, requestID, "http_error", payload, message)
 		// response.failed 到达在 HTTP 200 SSE 流上，无真实 HTTP 错误码；统一走语义
 		// 状态推断 + body 归一化（与 /v1/responses 路径一致），使按错误码配置的规则可命中。
@@ -645,6 +651,14 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	var streamFailoverErr *UpstreamFailoverError
 	var streamNonFailoverErr error
 	terminalEventType := ""
+	terminalAccountSideEffectsApplied := false
+	applyTerminalAccountSideEffects := func(payload []byte, message string) {
+		if terminalAccountSideEffectsApplied || !openAIStreamTerminalAccountSideEffectsApplicable(payload, message) {
+			return
+		}
+		s.handleOpenAIStreamTerminalAccountSideEffects(c, account, payload, message, resp.Header, upstreamModel)
+		terminalAccountSideEffectsApplied = true
+	}
 	// Grok chat bridge reuses Responses SSE; count native search tools for surcharge.
 	searchCount := 0
 	streamSearchSeen := make(map[string]struct{})
@@ -765,6 +779,10 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				streamFailoverErr = s.newOpenAIStreamFailoverError(c, account, false, requestID, payloadBytes, message, resp.Header)
 				return true
 			}
+			// A terminal failure after output (or a non-retryable pre-output
+			// failure) is not handled by the HTTP status path. Persist account
+			// scheduling state before exposing the compat error to the client.
+			applyTerminalAccountSideEffects(payloadBytes, message)
 			message = s.recordOpenAIStreamUpstreamError(c, account, false, requestID, "http_error", payloadBytes, message)
 			defaultStatus, defaultErrType, defaultMsg := http.StatusBadGateway, "upstream_error", message
 			// 统一走语义状态推断 + body 归一化（与 /v1/responses 路径一致），

@@ -539,6 +539,30 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 	logOpenAIInstructionsRequiredDebug(ctx, c, account, resp.StatusCode, upstreamMsg, requestBody, body)
 
+	// Resolve the scheduling model before any response-policy early return. The
+	// passthrough and custom-code branches still control the client response, but
+	// they must not bypass account health bookkeeping. Keep one guarded call so a
+	// request-body-limit path cannot double-apply rate-limit/overdraft effects.
+	var reqModel string
+	if len(requestedModel) > 0 {
+		reqModel = strings.TrimSpace(requestedModel[0])
+	}
+	if reqModel == "" {
+		reqModel, _, _ = extractOpenAIRequestMetaFromBody(requestBody)
+		reqModel = canonicalOpenAIAccountSchedulingModel(account, reqModel)
+	}
+	stateHandled := false
+	handleState := func() bool {
+		if stateHandled {
+			return false
+		}
+		stateHandled = true
+		if reqModel == "" {
+			return s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
+		}
+		return s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, reqModel)
+	}
+
 	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 		logger.LegacyPrintf("service.openai_gateway",
 			"OpenAI upstream error %d (account=%d platform=%s type=%s): %s",
@@ -561,7 +585,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 			Message:            upstreamMsg,
 			Detail:             upstreamDetail,
 		})
-		s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, requestedModel...)
+		handleState()
 		return nil, newOpenAIUpstreamFailoverError(
 			resp.StatusCode,
 			resp.Header,
@@ -580,6 +604,9 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		"upstream_error",
 		"Upstream request failed",
 	); matched {
+		// Preserve the configured passthrough response while still recording the
+		// upstream failure against the selected account.
+		handleState()
 		MarkResponseCommitted(c)
 		c.JSON(status, gin.H{
 			"error": gin.H{
@@ -598,6 +625,10 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 
 	// Check custom error codes
 	if !account.ShouldHandleErrorCode(resp.StatusCode) {
+		// A custom allow-list controls the response/failover policy, but it must
+		// not suppress health bookkeeping for an account that actually received
+		// an upstream response.
+		handleState()
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 			Platform:           account.Platform,
 			AccountID:          account.ID,
@@ -621,16 +652,8 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		return nil, fmt.Errorf("upstream error: %d (not in custom error codes) message=%s", resp.StatusCode, upstreamMsg)
 	}
 
-	// Handle upstream error (mark account status)
-	var reqModel string
-	if len(requestedModel) > 0 {
-		reqModel = strings.TrimSpace(requestedModel[0])
-	}
-	if reqModel == "" {
-		reqModel, _, _ = extractOpenAIRequestMetaFromBody(requestBody)
-		reqModel = canonicalOpenAIAccountSchedulingModel(account, reqModel)
-	}
-	shouldDisable := s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, reqModel)
+	// Handle upstream error (mark account status).
+	shouldDisable := handleState()
 	kind := "http_error"
 	if shouldDisable {
 		kind = "failover"
@@ -733,7 +756,11 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 	requestedModel ...string,
 ) (*OpenAIForwardResult, error) {
 	body := s.readUpstreamErrorBody(resp)
-	body = s.redactAgentIdentitySensitiveBody(context.Background(), account, body)
+	ctx := context.Background()
+	if c != nil && c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	body = s.redactAgentIdentitySensitiveBody(ctx, account, body)
 
 	// cyber_policy：兼容路径（Chat Completions / Anthropic）以各自格式回写错误，
 	// 不原样透传 responses 格式的 cyber body（否则对下游格式不合法）。cyber 是上游网络
@@ -781,11 +808,31 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 	}
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 
+	// As in handleErrorResponse, perform account-state bookkeeping exactly once
+	// before policy-specific early returns. The compat writer remains responsible
+	// for preserving the requested response shape.
+	var modelForCooldown string
+	if len(requestedModel) > 0 {
+		modelForCooldown = strings.TrimSpace(requestedModel[0])
+	}
+	stateHandled := false
+	handleState := func() bool {
+		if stateHandled {
+			return false
+		}
+		stateHandled = true
+		if modelForCooldown == "" {
+			return s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
+		}
+		return s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, modelForCooldown)
+	}
+
 	// Apply error passthrough rules
 	if status, errType, errMsg, matched := applyErrorPassthroughRule(
 		c, account.Platform, resp.StatusCode, body,
 		http.StatusBadGateway, "api_error", "Upstream request failed",
 	); matched {
+		handleState()
 		MarkResponseCommitted(c)
 		writeError(c, status, errType, errMsg)
 		if upstreamMsg == "" {
@@ -800,6 +847,7 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 	// Check custom error codes — if the account does not handle this status,
 	// return a generic error without exposing upstream details.
 	if !account.ShouldHandleErrorCode(resp.StatusCode) {
+		handleState()
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 			Platform:           account.Platform,
 			AccountID:          account.ID,
@@ -819,13 +867,7 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 	}
 
 	// Track rate limits and decide whether to trigger secondary failover.
-	var modelForCooldown string
-	if len(requestedModel) > 0 {
-		modelForCooldown = requestedModel[0]
-	}
-	shouldDisable := s.handleOpenAIAccountUpstreamError(
-		c.Request.Context(), account, resp.StatusCode, resp.Header, body, modelForCooldown,
-	)
+	shouldDisable := handleState()
 	kind := "http_error"
 	if shouldDisable {
 		kind = "failover"

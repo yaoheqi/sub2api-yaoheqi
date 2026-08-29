@@ -456,8 +456,11 @@ type OpenAIGatewayService struct {
 	openaiProxyStreamCircuit       *openAIProxyStreamCircuit
 	openaiProxyStreamFailOpenLogAt atomic.Int64
 
-	openaiWSFallbackUntil               sync.Map // key: int64(accountID), value: time.Time
-	openaiAccountRuntimeBlockUntil      sync.Map // key: int64(accountID), value: time.Time
+	openaiWSFallbackUntil          sync.Map // key: int64(accountID), value: time.Time
+	openaiAccountRuntimeBlockUntil sync.Map // key: int64(accountID), value: time.Time
+	// Short scheduler-only quarantine for ordinary OAuth 429s. Kept separate
+	// from the account blocker so in-flight same-account retries remain valid.
+	openaiOAuth429TransientUntil        sync.Map // key: int64(accountID), value: time.Time
 	openaiAccountRuntimeBlockLocks      sync.Map // key: int64(accountID), value: *sync.Mutex
 	openaiAccountRuntimeBlockGeneration sync.Map // key: int64(accountID), value: uint64
 	openaiAccountRuntimeBlockSequence   atomic.Uint64

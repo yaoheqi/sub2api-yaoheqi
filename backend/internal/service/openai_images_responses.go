@@ -796,6 +796,17 @@ func openAIImagesUpstreamErrorFromGJSON(errorObj gjson.Result, upstreamRequestID
 	message := strings.TrimSpace(errorObj.Get("message").String())
 	param := strings.TrimSpace(errorObj.Get("param").String())
 	statusCode := openAIImagesSSEErrorStatus(errType, code)
+	// Responses image events may carry the authoritative HTTP status alongside
+	// the error envelope. Preserve it instead of collapsing an explicit 503
+	// (or 401/403/429) into the heuristic default.
+	for _, path := range []string{"status_code", "status", "http_status", "response.status_code", "response.status"} {
+		if value := errorObj.Get(path); value.Exists() {
+			if status := int(value.Int()); status >= http.StatusBadRequest && status <= 599 {
+				statusCode = status
+				break
+			}
+		}
+	}
 	if message == "" {
 		message = "Upstream request failed"
 	}
@@ -911,6 +922,19 @@ func (s *OpenAIGatewayService) handleOpenAIImagesErrorResponse(
 		"upstream_error",
 		"Upstream request failed",
 	); matched {
+		// A passthrough rule only changes the client-facing response. The upstream
+		// request was still sent, so account health/rate-limit state must be
+		// recorded before returning from this branch (the generic and compat
+		// handlers follow the same contract).
+		modelForCooldown := ""
+		if len(requestedModel) > 0 {
+			modelForCooldown = strings.TrimSpace(requestedModel[0])
+		}
+		if modelForCooldown == "" {
+			_ = s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
+		} else {
+			_ = s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, modelForCooldown)
+		}
 		upErr := &OpenAIImagesUpstreamError{
 			StatusCode:        status,
 			ErrorType:         errType,
@@ -925,6 +949,18 @@ func (s *OpenAIGatewayService) handleOpenAIImagesErrorResponse(
 	// a generic gateway error without exposing upstream internals (mirrors
 	// handleCompatErrorResponse).
 	if !account.ShouldHandleErrorCode(resp.StatusCode) {
+		modelForCooldown := ""
+		if len(requestedModel) > 0 {
+			modelForCooldown = strings.TrimSpace(requestedModel[0])
+		}
+		// The allow-list only controls the client-facing policy. Account health
+		// must still observe quota/auth/unavailable responses so scheduling state
+		// converges even when an administrator chose to pass the status through.
+		if modelForCooldown == "" {
+			_ = s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
+		} else {
+			_ = s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, modelForCooldown)
+		}
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 			Platform:           account.Platform,
 			AccountID:          account.ID,
@@ -2016,6 +2052,17 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthResponseError(
 	})
 
 	responseBody := openAIImagesUpstreamErrorResponseBody(upstreamErr)
+	criticalStatus := upstreamErr.StatusCode == http.StatusUnauthorized ||
+		upstreamErr.StatusCode == http.StatusForbidden ||
+		upstreamErr.StatusCode == http.StatusTooManyRequests ||
+		upstreamErr.StatusCode == http.StatusServiceUnavailable
+	shouldDisable := false
+	if criticalStatus {
+		// Apply account health transitions before any responseWritten/retryability
+		// early return. Streaming image requests often commit HTTP 200 headers
+		// before emitting response.failed.
+		shouldDisable = s.handleOpenAIAccountUpstreamError(ctx, account, upstreamErr.StatusCode, headers, responseBody, requestedModel)
+	}
 	if upstreamErr.Code == "image_generation_unavailable" {
 		s.coolOpenAIImagesOAuthTool(ctx, account)
 		if responseWritten {
@@ -2027,14 +2074,16 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthResponseError(
 			headers,
 			responseBody,
 			upstreamErr.clientMessage(),
-			false,
+			shouldDisable,
 			false,
 		)
+	}
+	if !criticalStatus {
+		shouldDisable = s.handleOpenAIAccountUpstreamError(ctx, account, upstreamErr.StatusCode, headers, responseBody, requestedModel)
 	}
 	if !retryable || responseWritten {
 		return err
 	}
-	shouldDisable := s.handleOpenAIAccountUpstreamError(ctx, account, upstreamErr.StatusCode, headers, responseBody, requestedModel)
 	return s.newOpenAIAccountFailoverError(
 		account,
 		upstreamErr.StatusCode,

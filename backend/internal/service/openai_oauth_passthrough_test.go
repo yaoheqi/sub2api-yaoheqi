@@ -229,8 +229,12 @@ func TestOpenAIGatewayService_OAuthMessagesBridgeDoesNotInjectDefaultInstruction
 
 type openAIPassthroughFailoverRepo struct {
 	stubOpenAIAccountRepo
-	rateLimitCalls []time.Time
-	overloadCalls  []time.Time
+	rateLimitCalls         []time.Time
+	overloadCalls          []time.Time
+	tempUnschedulableCalls []struct {
+		until  time.Time
+		reason string
+	}
 }
 
 func (r *openAIPassthroughFailoverRepo) SetRateLimited(_ context.Context, _ int64, resetAt time.Time) error {
@@ -240,6 +244,14 @@ func (r *openAIPassthroughFailoverRepo) SetRateLimited(_ context.Context, _ int6
 
 func (r *openAIPassthroughFailoverRepo) SetOverloaded(_ context.Context, _ int64, until time.Time) error {
 	r.overloadCalls = append(r.overloadCalls, until)
+	return nil
+}
+
+func (r *openAIPassthroughFailoverRepo) SetTempUnschedulable(_ context.Context, _ int64, until time.Time, reason string) error {
+	r.tempUnschedulableCalls = append(r.tempUnschedulableCalls, struct {
+		until  time.Time
+		reason string
+	}{until: until, reason: reason})
 	return nil
 }
 
@@ -1435,10 +1447,13 @@ func TestOpenAIGatewayService_OpenAIPassthrough_RetryableStatusesTriggerFailover
 			accountType:    AccountTypeOAuth,
 			statusCode:     http.StatusServiceUnavailable,
 			body:           `{"error":{"message":"service unavailable","type":"server_error"}}`,
-			expectFailover: false,
-			assertRepo: func(t *testing.T, repo *openAIPassthroughFailoverRepo, _ time.Time) {
+			expectFailover: true,
+			assertRepo: func(t *testing.T, repo *openAIPassthroughFailoverRepo, start time.Time) {
 				require.Empty(t, repo.rateLimitCalls)
 				require.Empty(t, repo.overloadCalls)
+				require.Len(t, repo.tempUnschedulableCalls, 1)
+				require.Equal(t, openAIOAuth503TempReason, repo.tempUnschedulableCalls[0].reason)
+				require.WithinDuration(t, start.Add(openAIOAuth503TempCooldown), repo.tempUnschedulableCalls[0].until, 5*time.Second)
 			},
 		},
 		{

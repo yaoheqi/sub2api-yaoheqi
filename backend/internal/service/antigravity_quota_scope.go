@@ -38,7 +38,35 @@ func (a *Account) IsSchedulableForModelWithContext(ctx context.Context, requeste
 	if a == nil {
 		return false
 	}
-	if !a.IsSchedulable() {
+	// Keep the ordinary schedulability gates explicit here instead of calling
+	// IsSchedulable wholesale: an overdraft-marked request may temporarily
+	// reuse an OAuth account whose account-level rate-limit belongs to a
+	// confirmed Codex quota cycle, while every other blocker remains hard.
+	if !a.IsActive() || !a.Schedulable {
+		return false
+	}
+	now := time.Now()
+	if a.AutoPauseOnExpired && a.ExpiresAt != nil && !now.Before(*a.ExpiresAt) {
+		return false
+	}
+	if a.OverloadUntil != nil && now.Before(*a.OverloadUntil) {
+		return false
+	}
+	if a.TempUnschedulableUntil != nil && now.Before(*a.TempUnschedulableUntil) {
+		// Overdraft is allowed to bypass only the account scheduling-threshold
+		// pause that was created by quota auto-pause. Authentication, transport,
+		// and upstream-error cooldowns remain hard blockers.
+		canBypass := codexQuotaOverdraftBypassesSchedulingThreshold(ctx, a) &&
+			IsAccountSchedulingThresholdReason(a.TempUnschedulableReason)
+		if !canBypass {
+			return false
+		}
+	}
+	if a.RateLimitResetAt != nil && now.Before(*a.RateLimitResetAt) &&
+		!codexQuotaOverdraftCanBypassAccountRateLimit(ctx, a, now) {
+		return false
+	}
+	if a.IsAPIKeyOrBedrock() && a.IsQuotaExceeded() {
 		return false
 	}
 	if a.isModelRateLimitedWithContext(ctx, requestedModel) {

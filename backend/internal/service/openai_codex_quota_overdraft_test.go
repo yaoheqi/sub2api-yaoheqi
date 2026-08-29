@@ -153,10 +153,25 @@ func TestCodexQuotaOverdraftSchedulingOnlyBypassesQuotaThresholds(t *testing.T) 
 
 	account.RateLimitResetAt = &reset
 	require.False(t, account.IsSchedulableForModelWithContext(quotaCtx, "gpt-5.4"), "真实 429 限流仍必须生效")
+	// A generic 429 has no overdraft cycle and must remain blocked.  Once a
+	// probe/business request confirms this exact exhausted cycle, the same
+	// account-level reset may be bypassed for the marked overdraft request.
+	signal, exhausted := codexQuotaOverdraftSignalFromAccount(account, nil, now)
+	require.True(t, exhausted)
+	passed := newCodexOverdraftPendingState(signal, now)
+	passed.Status = codexQuotaOverdraftProbePassed
+	account.Extra[CodexQuotaOverdraftProbeExtraKey] = passed
+	require.True(t, account.IsSchedulableForModelWithContext(quotaCtx, "gpt-5.4"), "已确认的 Codex 配额周期应允许透支调度")
+	delete(account.Extra, CodexQuotaOverdraftProbeExtraKey)
 	account.RateLimitResetAt = nil
 	account.TempUnschedulableUntil = &reset
 	account.TempUnschedulableReason = BuildTempUnschedReasonPayload("oauth_401", "unauthorized")
 	require.Same(t, account, normalizeCodexQuotaOverdraftAccountForScheduling(quotaCtx, account), "其他临时暂停不能绕过")
+	// A passed overdraft probe must not bypass an OAuth 401/503 quarantine.
+	account.Extra[CodexQuotaOverdraftProbeExtraKey] = passed
+	require.False(t, account.IsSchedulableForModelWithContext(quotaCtx, "gpt-5.4"), "OAuth authentication cooldown remains a hard blocker")
+	account.TempUnschedulableReason = BuildTempUnschedReasonPayload(openAIOAuth503TempReason, "upstream unavailable")
+	require.False(t, account.IsSchedulableForModelWithContext(quotaCtx, "gpt-5.4"), "OAuth 503 cooldown remains a hard blocker")
 
 	account.TempUnschedulableReason = BuildAccountSchedulingThresholdReason("")
 	normalized := normalizeCodexQuotaOverdraftAccountForScheduling(quotaCtx, account)

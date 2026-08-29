@@ -73,6 +73,26 @@ func codexQuotaOverdraftSchedulingEnabled(ctx context.Context) bool {
 	return CodexQuotaOverdraftSchedulingEnabled(ctx)
 }
 
+// codexQuotaOverdraftCanBypassAccountRateLimit is intentionally narrower than
+// the scheduling-threshold bypass.  A future account-level reset is normally
+// a hard exclusion because it may represent an ordinary transient 429.  It is
+// only bypassed after the current Codex quota cycle has been positively
+// confirmed by an injected request/probe and persisted as passed.  Pending,
+// inconclusive, failed, and unclassified cycles remain blocked until their
+// normal reset or a fresh probe result is available.
+func codexQuotaOverdraftCanBypassAccountRateLimit(ctx context.Context, account *Account, now time.Time) bool {
+	if !codexQuotaOverdraftSchedulingEnabled(ctx) || !isCodexQuotaOverdraftAccount(account) ||
+		account.RateLimitResetAt == nil || !account.RateLimitResetAt.After(now) {
+		return false
+	}
+	state, ok := codexQuotaOverdraftStateFromAccount(account)
+	if !ok || state == nil || state.Status != codexQuotaOverdraftProbePassed {
+		return false
+	}
+	signal, exhausted := codexQuotaOverdraftSignalFromAccount(account, state, now)
+	return exhausted && codexQuotaOverdraftStateCoversSignal(state, signal)
+}
+
 func codexQuotaOverdraftRequestStateFromContext(ctx context.Context) *codexQuotaOverdraftRequestState {
 	if ctx == nil {
 		return nil

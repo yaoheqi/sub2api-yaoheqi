@@ -11,6 +11,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	entsql "entgo.io/ent/dialect/sql"
+	"github.com/Wei-Shaw/sub2api/ent/predicate"
 )
 
 // ClaimCodexQuotaOverdraftProbe atomically reserves one quota cycle. A cycle is
@@ -229,4 +230,30 @@ func extendCodexQuotaOverdraftTempUnschedulablePredicates(
 		entsql.IsNull(s.C("parent_account_id")),
 		entsql.Contains(reasonCol, `"source":"`+service.AccountSchedulingThresholdReasonSource+`"`),
 	))
+}
+
+// codexQuotaOverdraftRateLimitPredicate keeps the ordinary account-level
+// rate-limit gate for every account except first-party OpenAI OAuth parents
+// while an overdraft-marked request is being assembled.  The service layer
+// performs the stricter cycle/state check after hydration; the SQL predicate
+// only prevents a known quota candidate from disappearing before that check.
+// This is deliberately scoped to OpenAI OAuth parents so API keys, shadows,
+// and all other providers retain the normal rate-limit exclusion.
+func codexQuotaOverdraftRateLimitPredicate(ctx context.Context) predicate.Account {
+	return predicate.Account(func(s *entsql.Selector) {
+		normal := entsql.Or(
+			entsql.IsNull(s.C("rate_limit_reset_at")),
+			entsql.LTE(s.C("rate_limit_reset_at"), entsql.Expr("NOW()")),
+		)
+		if !service.CodexQuotaOverdraftSchedulingEnabled(ctx) {
+			s.Where(normal)
+			return
+		}
+		quotaCandidate := entsql.And(
+			entsql.EQ(s.C("platform"), service.PlatformOpenAI),
+			entsql.EQ(s.C("type"), service.AccountTypeOAuth),
+			entsql.IsNull(s.C("parent_account_id")),
+		)
+		s.Where(entsql.Or(normal, quotaCandidate))
+	})
 }

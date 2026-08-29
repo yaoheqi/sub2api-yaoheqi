@@ -92,15 +92,21 @@ type OpenAIAccountScheduleRequest struct {
 }
 
 type OpenAIAccountScheduleDecision struct {
-	Layer               string
-	StickyPreviousHit   bool
-	StickySessionHit    bool
-	CandidateCount      int
-	TopK                int
-	LatencyMs           int64
-	LoadSkew            float64
-	SelectedAccountID   int64
-	SelectedAccountType string
+	Layer                   string
+	StickyPreviousHit       bool
+	StickySessionHit        bool
+	CandidateCount          int
+	TopK                    int
+	LatencyMs               int64
+	LoadSkew                float64
+	SelectedAccountID       int64
+	SelectedAccountType     string
+	SelectedAccountPriority int
+	SelectedGroupPriority   int
+	SelectedLoadFactor      int
+	SelectedConcurrency     int
+	SelectedOverdraft       bool
+	SelectedOverdraftStatus string
 }
 
 type OpenAIAccountSchedulerMetricsSnapshot struct {
@@ -384,6 +390,25 @@ func (s *defaultOpenAIAccountScheduler) Select(
 	defer func() {
 		decision.LatencyMs = time.Since(start).Milliseconds()
 		s.metrics.recordSelect(decision)
+		// Keep scheduling decisions observable without exposing credentials or
+		// request payloads.  Account IDs/types are internal routing metadata.
+		slog.Info("openai.account_schedule_decision",
+			"layer", decision.Layer,
+			"sticky_previous_hit", decision.StickyPreviousHit,
+			"sticky_session_hit", decision.StickySessionHit,
+			"candidate_count", decision.CandidateCount,
+			"top_k", decision.TopK,
+			"load_skew", decision.LoadSkew,
+			"selected_account_id", decision.SelectedAccountID,
+			"selected_account_type", decision.SelectedAccountType,
+			"selected_account_priority", decision.SelectedAccountPriority,
+			"selected_group_priority", decision.SelectedGroupPriority,
+			"selected_load_factor", decision.SelectedLoadFactor,
+			"selected_concurrency", decision.SelectedConcurrency,
+			"selected_overdraft", decision.SelectedOverdraft,
+			"selected_overdraft_status", decision.SelectedOverdraftStatus,
+			"latency_ms", decision.LatencyMs,
+		)
 	}()
 
 	previousResponseID := strings.TrimSpace(req.PreviousResponseID)
@@ -419,8 +444,7 @@ func (s *defaultOpenAIAccountScheduler) Select(
 		if selection != nil && selection.Account != nil {
 			decision.Layer = openAIAccountScheduleLayerPreviousResponse
 			decision.StickyPreviousHit = true
-			decision.SelectedAccountID = selection.Account.ID
-			decision.SelectedAccountType = selection.Account.Type
+			populateOpenAIAccountScheduleDecision(&decision, selection.Account, req.GroupID)
 			if req.SessionHash != "" {
 				_ = s.service.bindOpenAIStickySessionDuringSelection(ctx, req.GroupID, req.SessionHash, selection.Account.ID)
 			}
@@ -439,26 +463,60 @@ func (s *defaultOpenAIAccountScheduler) Select(
 		if selection != nil && selection.Account != nil {
 			decision.Layer = openAIAccountScheduleLayerGuardianParent
 			decision.StickySessionHit = true
-			decision.SelectedAccountID = selection.Account.ID
-			decision.SelectedAccountType = selection.Account.Type
+			populateOpenAIAccountScheduleDecision(&decision, selection.Account, req.GroupID)
 			return selection, decision, nil
 		}
 	}
 
 	if !req.StickyWeighted {
+		var escapedStickyAccountID int64
 		selection, escapedSticky, err := s.selectBySessionHash(ctx, req)
 		if err != nil {
 			return nil, decision, err
 		}
 		if selection != nil && selection.Account != nil {
+			// Even with the advanced scheduler enabled, an unweighted sticky hit
+			// must yield to a strictly better live account. Release the slot and
+			// clear the binding before falling through to load-balance selection.
+			if s.service != nil && s.service.stickyAccountShouldYield(ctx, req.GroupID, req.Platform, req.RequestedModel, selection.Account, req.ExcludedIDs, req.RequireCompact, req.RequiredCapability) {
+				escapedStickyAccountID = selection.Account.ID
+				if selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+				if strings.TrimSpace(req.SessionHash) != "" {
+					_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, req.SessionHash)
+				}
+				selection = nil
+				escapedSticky = true
+			}
+		}
+		if selection != nil && selection.Account != nil {
 			decision.Layer = openAIAccountScheduleLayerSessionSticky
 			decision.StickySessionHit = true
-			decision.SelectedAccountID = selection.Account.ID
-			decision.SelectedAccountType = selection.Account.Type
+			populateOpenAIAccountScheduleDecision(&decision, selection.Account, req.GroupID)
 			return selection, decision, nil
 		}
 		if escapedSticky {
-			req.PreserveStickyBinding = true
+			// A sticky-yield path already deleted the binding and should allow the
+			// fallback account to establish a fresh binding. Runtime escape paths,
+			// by contrast, preserve the existing binding for later recovery.
+			if escapedStickyAccountID <= 0 {
+				req.PreserveStickyBinding = true
+			}
+			// Keep the escaped account out of this request's load-balance pass;
+			// the durable sticky binding is intentionally preserved for the next
+			// request after the runtime escape window.
+			if req.ExcludedIDs == nil {
+				req.ExcludedIDs = make(map[int64]struct{})
+			}
+			if escapedStickyAccountID <= 0 {
+				if escapedID, lookupErr := s.service.getStickySessionAccountID(ctx, req.GroupID, req.SessionHash); lookupErr == nil {
+					escapedStickyAccountID = escapedID
+				}
+			}
+			if escapedStickyAccountID > 0 {
+				req.ExcludedIDs[escapedStickyAccountID] = struct{}{}
+			}
 		}
 	}
 
@@ -471,8 +529,7 @@ func (s *defaultOpenAIAccountScheduler) Select(
 		return nil, decision, err
 	}
 	if selection != nil && selection.Account != nil {
-		decision.SelectedAccountID = selection.Account.ID
-		decision.SelectedAccountType = selection.Account.Type
+		populateOpenAIAccountScheduleDecision(&decision, selection.Account, req.GroupID)
 		if req.StickyWeighted {
 			if req.StickyPreviousAccountID > 0 && selection.Account.ID == req.StickyPreviousAccountID {
 				decision.StickyPreviousHit = true
@@ -483,6 +540,22 @@ func (s *defaultOpenAIAccountScheduler) Select(
 		}
 	}
 	return selection, decision, nil
+}
+
+func populateOpenAIAccountScheduleDecision(decision *OpenAIAccountScheduleDecision, account *Account, groupID *int64) {
+	if decision == nil || account == nil {
+		return
+	}
+	decision.SelectedAccountID = account.ID
+	decision.SelectedAccountType = account.Type
+	decision.SelectedAccountPriority = account.Priority
+	decision.SelectedGroupPriority = openAIAccountGroupPriority(account, groupID)
+	decision.SelectedLoadFactor = account.EffectiveLoadFactor()
+	decision.SelectedConcurrency = account.Concurrency
+	if state, ok := codexQuotaOverdraftStateFromAccount(account); ok && state != nil {
+		decision.SelectedOverdraft = true
+		decision.SelectedOverdraftStatus = string(state.Status)
+	}
 }
 
 func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
@@ -521,7 +594,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		clearBinding()
 		return nil, false, nil
 	}
-	if shouldClearStickySession(account, req.RequestedModel) || account.Platform != NormalizeOpenAICompatiblePlatform(req.Platform) || !account.IsOpenAICompatible() || !account.IsSchedulable() {
+	if shouldClearStickySession(account, req.RequestedModel) || account.Platform != NormalizeOpenAICompatiblePlatform(req.Platform) || !account.IsOpenAICompatible() || !account.IsSchedulableForModelWithContext(ctx, req.RequestedModel) {
 		clearBinding()
 		return nil, false, nil
 	}
@@ -644,14 +717,15 @@ func (s *defaultOpenAIAccountScheduler) shouldEscapeStickyAccount(accountID int6
 }
 
 type openAIAccountCandidateScore struct {
-	account   *Account
-	loadInfo  *AccountLoadInfo
-	loadKnown bool
-	score     float64
-	priority  int
-	errorRate float64
-	ttft      float64
-	hasTTFT   bool
+	account       *Account
+	loadInfo      *AccountLoadInfo
+	loadKnown     bool
+	score         float64
+	priority      int
+	groupPriority int
+	errorRate     float64
+	ttft          float64
+	hasTTFT       bool
 }
 
 type openAIAccountCandidateHeap []openAIAccountCandidateScore
@@ -686,11 +760,18 @@ func (h *openAIAccountCandidateHeap) Pop() any {
 }
 
 func isOpenAIAccountCandidateBetter(left openAIAccountCandidateScore, right openAIAccountCandidateScore) bool {
-	if left.score != right.score {
-		return left.score > right.score
-	}
+	// Account priority is the primary routing contract.  A low-load account
+	// must not outrank a higher-priority OAuth account merely because its
+	// weighted score is better.  Group membership priority is only a
+	// secondary tie-break within the same account priority.
 	if left.account.Priority != right.account.Priority {
 		return left.account.Priority < right.account.Priority
+	}
+	if left.groupPriority != right.groupPriority {
+		return left.groupPriority < right.groupPriority
+	}
+	if left.score != right.score {
+		return left.score > right.score
 	}
 	if left.loadInfo.LoadRate != right.loadInfo.LoadRate {
 		return left.loadInfo.LoadRate < right.loadInfo.LoadRate
@@ -699,6 +780,18 @@ func isOpenAIAccountCandidateBetter(left openAIAccountCandidateScore, right open
 		return left.loadInfo.WaitingCount < right.loadInfo.WaitingCount
 	}
 	return left.account.ID < right.account.ID
+}
+
+func openAIAccountGroupPriority(account *Account, groupID *int64) int {
+	if account == nil || groupID == nil || *groupID <= 0 {
+		return 0
+	}
+	for _, membership := range account.AccountGroups {
+		if membership.GroupID == *groupID {
+			return membership.Priority
+		}
+	}
+	return 0
 }
 
 func selectTopKOpenAICandidates(candidates []openAIAccountCandidateScore, topK int) []openAIAccountCandidateScore {
@@ -798,6 +891,52 @@ func buildOpenAIWeightedSelectionOrder(
 	if len(candidates) <= 1 {
 		return append([]openAIAccountCandidateScore(nil), candidates...)
 	}
+	// Keep weighted randomization inside the best priority tier.  This guard
+	// also protects direct callers that bypass buildOpenAISelectionOrder.
+	candidatePriority := func(candidate openAIAccountCandidateScore) int {
+		if candidate.account != nil {
+			// The account snapshot is authoritative. Older scheduler snapshots may
+			// omit the denormalized score field, while priority zero is valid.
+			return candidate.account.Priority
+		}
+		return candidate.priority
+	}
+	candidateGroupPriority := func(candidate openAIAccountCandidateScore) int {
+		if candidate.account != nil && req.GroupID != nil {
+			return openAIAccountGroupPriority(candidate.account, req.GroupID)
+		}
+		return candidate.groupPriority
+	}
+	bestPriority := candidatePriority(candidates[0])
+	for _, candidate := range candidates[1:] {
+		if priority := candidatePriority(candidate); priority < bestPriority {
+			bestPriority = priority
+		}
+	}
+	bestGroupPriority := int(^uint(0) >> 1)
+	for _, candidate := range candidates {
+		if candidatePriority(candidate) == bestPriority {
+			if priority := candidateGroupPriority(candidate); priority < bestGroupPriority {
+				bestGroupPriority = priority
+			}
+		}
+	}
+	bestTier := make([]openAIAccountCandidateScore, 0, len(candidates))
+	overflow := make([]openAIAccountCandidateScore, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidatePriority(candidate) == bestPriority && candidateGroupPriority(candidate) == bestGroupPriority {
+			bestTier = append(bestTier, candidate)
+		} else {
+			overflow = append(overflow, candidate)
+		}
+	}
+	if len(overflow) > 0 {
+		ordered := buildOpenAIWeightedSelectionOrder(bestTier, req)
+		sort.SliceStable(overflow, func(i, j int) bool {
+			return isOpenAIAccountCandidateBetter(overflow[i], overflow[j])
+		})
+		return append(ordered, overflow...)
+	}
 
 	pool := append([]openAIAccountCandidateScore(nil), candidates...)
 	weights := make([]float64, len(pool))
@@ -864,12 +1003,14 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 			errorRate, ttft, hasTTFT = s.stats.snapshot(account.ID)
 		}
 		allCandidates = append(allCandidates, openAIAccountCandidateScore{
-			account:   account,
-			loadInfo:  loadInfo,
-			loadKnown: loadKnown,
-			errorRate: errorRate,
-			ttft:      ttft,
-			hasTTFT:   hasTTFT,
+			account:       account,
+			loadInfo:      loadInfo,
+			loadKnown:     loadKnown,
+			priority:      openAIAccountSchedulingPriority(account),
+			groupPriority: openAIAccountGroupPriority(account, req.GroupID),
+			errorRate:     errorRate,
+			ttft:          ttft,
+			hasTTFT:       hasTTFT,
 		})
 	}
 
@@ -1049,11 +1190,36 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 		if len(pool) == 0 || plan.topK <= 0 {
 			return nil
 		}
-		groupTopK := plan.topK
-		if groupTopK > len(pool) {
-			groupTopK = len(pool)
+		// Priority is a hard routing boundary. Weighted selection is only
+		// meaningful within the best account/group-priority tier; otherwise a
+		// low-priority account could win the random draw over a preferred OAuth
+		// account simply because its load score is better.
+		bestPriority := pool[0].priority
+		for _, candidate := range pool[1:] {
+			if candidate.priority < bestPriority {
+				bestPriority = candidate.priority
+			}
 		}
-		ranked := selectTopKOpenAICandidates(pool, groupTopK)
+		bestGroupPriority := int(^uint(0) >> 1)
+		for _, candidate := range pool {
+			if candidate.priority == bestPriority && candidate.groupPriority < bestGroupPriority {
+				bestGroupPriority = candidate.groupPriority
+			}
+		}
+		bestTier := make([]openAIAccountCandidateScore, 0, len(pool))
+		overflowPool := make([]openAIAccountCandidateScore, 0, len(pool))
+		for _, candidate := range pool {
+			if candidate.priority == bestPriority && candidate.groupPriority == bestGroupPriority {
+				bestTier = append(bestTier, candidate)
+			} else {
+				overflowPool = append(overflowPool, candidate)
+			}
+		}
+		groupTopK := plan.topK
+		if groupTopK > len(bestTier) {
+			groupTopK = len(bestTier)
+		}
+		ranked := selectTopKOpenAICandidates(bestTier, groupTopK)
 		var primary []openAIAccountCandidateScore
 		if req.StickyWeighted {
 			for _, stickyID := range []int64{req.StickyPreviousAccountID, req.StickyAccountID} {
@@ -1075,7 +1241,19 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 		if len(primary) == 0 {
 			primary = buildOpenAIWeightedSelectionOrder(ranked, req)
 		}
-		if !plan.includeOverflowFallback || groupTopK >= len(pool) {
+		if len(primary) >= len(pool) {
+			return primary
+		}
+		// Lower priority tiers are always retained as failover candidates. The
+		// includeOverflowFallback flag only gates extra same-tier candidates that
+		// were outside top-K for cost-aware scheduling.
+		if !plan.includeOverflowFallback && len(overflowPool) > 0 {
+			sort.SliceStable(overflowPool, func(i, j int) bool {
+				return isOpenAIAccountCandidateBetter(overflowPool[i], overflowPool[j])
+			})
+			return append(primary, overflowPool...)
+		}
+		if !plan.includeOverflowFallback {
 			return primary
 		}
 
@@ -1084,11 +1262,15 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 			selected[candidate.account.ID] = struct{}{}
 		}
 		overflow := make([]openAIAccountCandidateScore, 0, len(pool)-len(primary))
-		for _, candidate := range pool {
+		// Candidates left out of top-K in the best tier must remain ahead of
+		// every lower-priority tier. Sorting with the same comparator preserves
+		// that boundary while retaining deterministic score/load ordering.
+		for _, candidate := range bestTier {
 			if _, ok := selected[candidate.account.ID]; !ok {
 				overflow = append(overflow, candidate)
 			}
 		}
+		overflow = append(overflow, overflowPool...)
 		sort.Slice(overflow, func(i, j int) bool {
 			return isOpenAIAccountCandidateBetter(overflow[i], overflow[j])
 		})
@@ -1125,8 +1307,11 @@ func sortOpenAICompactRetryCandidates(pool []openAIAccountCandidateScore) []open
 	ordered := append([]openAIAccountCandidateScore(nil), pool...)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		a, b := ordered[i], ordered[j]
-		if a.account.Priority != b.account.Priority {
-			return a.account.Priority < b.account.Priority
+		if a.priority != b.priority {
+			return a.priority < b.priority
+		}
+		if a.groupPriority != b.groupPriority {
+			return a.groupPriority < b.groupPriority
 		}
 		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
 			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
@@ -1439,7 +1624,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 				continue
 			}
 		}
-		if !account.IsSchedulable() {
+		if !account.IsSchedulableForModelWithContext(ctx, req.RequestedModel) {
 			filterStats.exclude("not_schedulable")
 			continue
 		}
@@ -1469,7 +1654,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		filtered = append(filtered, account)
 		loadReq = append(loadReq, AccountWithConcurrency{
 			ID:             account.ID,
-			MaxConcurrency: account.EffectiveLoadFactor(),
+			MaxConcurrency: account.Concurrency,
 		})
 	}
 	if len(filtered) == 0 {
@@ -1649,7 +1834,7 @@ func buildOpenAIAccountLoadRequest(accounts []*Account) []AccountWithConcurrency
 		}
 		loadReq = append(loadReq, AccountWithConcurrency{
 			ID:             account.ID,
-			MaxConcurrency: account.EffectiveLoadFactor(),
+			MaxConcurrency: account.Concurrency,
 		})
 	}
 	return loadReq
@@ -2441,6 +2626,7 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(account *Accoun
 	}
 	if success {
 		s.openaiOAuth429RetryStartedAt.Delete(accountID)
+		s.openaiOAuth429TransientUntil.Delete(accountID)
 		s.clearOpenAIAccountModelTransientState(accountID, normalizeOpenAIAccountModelTransientModel(model))
 		s.observeCodexQuotaOverdraftScheduleSuccess(accountID, model, []context.Context{requestCtx})
 	}

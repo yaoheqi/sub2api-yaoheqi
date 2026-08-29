@@ -50,7 +50,7 @@ func TestListSchedulableAccountLoadsUsesSingleProjectionQuery(t *testing.T) {
 	require.Equal(t, int64(11), loads[0].ID)
 	require.Equal(t, 3, loads[0].MaxConcurrency)
 	require.Equal(t, int64(12), loads[1].ID)
-	require.Equal(t, 7, loads[1].MaxConcurrency)
+	require.Equal(t, 2, loads[1].MaxConcurrency)
 	require.NoError(t, mock.ExpectationsWereMet(), "projection path must execute exactly one query")
 
 	normalized := normalizeSQLWhitespace(capturedSQL)
@@ -110,4 +110,10 @@ func TestSchedulableAccountQueryScopesCodexQuotaOverdraftToMarkedContext(t *test
 	require.Contains(t, overdraftSQL, `"platform" =`)
 	require.Contains(t, overdraftSQL, `"type" =`)
 	require.Contains(t, overdraftSQL, `"parent_account_id" IS NULL`)
+	require.Contains(t, overdraftSQL, `"rate_limit_reset_at"`)
+	// The marked query admits only the OpenAI OAuth parent shape past the SQL
+	// rate-limit gate; service-level cycle/state checks decide whether it is
+	// actually eligible. API keys and shadows remain under the normal gate.
+	require.Contains(t, overdraftSQL, `"platform" = $`)
+	require.Contains(t, overdraftSQL, `"type" = $`)
 }

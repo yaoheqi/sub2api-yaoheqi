@@ -1886,14 +1886,9 @@ func (r *accountRepository) ListSchedulableAccountLoads(ctx context.Context) ([]
 
 	loads := make([]service.AccountWithConcurrency, 0, len(accounts))
 	for _, account := range accounts {
-		projection := service.Account{
-			ID:          account.ID,
-			Concurrency: account.Concurrency,
-			LoadFactor:  account.LoadFactor,
-		}
 		loads = append(loads, service.AccountWithConcurrency{
 			ID:             account.ID,
-			MaxConcurrency: projection.EffectiveLoadFactor(),
+			MaxConcurrency: account.Concurrency,
 		})
 	}
 	return loads, nil
@@ -1907,7 +1902,7 @@ func (r *accountRepository) schedulableAccountsQuery(ctx context.Context, now ti
 			tempUnschedulablePredicate(ctx),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
-			dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)),
+			codexQuotaOverdraftRateLimitPredicate(ctx),
 		).
 		Order(dbent.Asc(dbaccount.FieldPriority))
 }
@@ -2013,7 +2008,7 @@ func (r *accountRepository) ListSchedulableByPlatform(ctx context.Context, platf
 			tempUnschedulablePredicate(ctx),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
-			dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)),
+			codexQuotaOverdraftRateLimitPredicate(ctx),
 		).
 		Order(dbent.Asc(dbaccount.FieldPriority)).
 		All(ctx)
@@ -2047,7 +2042,7 @@ func (r *accountRepository) ListSchedulableByPlatforms(ctx context.Context, plat
 			tempUnschedulablePredicate(ctx),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
-			dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)),
+			codexQuotaOverdraftRateLimitPredicate(ctx),
 		).
 		Order(dbent.Asc(dbaccount.FieldPriority)).
 		All(ctx)
@@ -2068,7 +2063,7 @@ func (r *accountRepository) ListSchedulableUngroupedByPlatform(ctx context.Conte
 			tempUnschedulablePredicate(ctx),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
-			dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)),
+			codexQuotaOverdraftRateLimitPredicate(ctx),
 		).
 		Order(dbent.Asc(dbaccount.FieldPriority)).
 		All(ctx)
@@ -2092,7 +2087,7 @@ func (r *accountRepository) ListSchedulableUngroupedByPlatforms(ctx context.Cont
 			tempUnschedulablePredicate(ctx),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
-			dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)),
+			codexQuotaOverdraftRateLimitPredicate(ctx),
 		).
 		Order(dbent.Asc(dbaccount.FieldPriority)).
 		All(ctx)
@@ -3073,7 +3068,7 @@ func (r *accountRepository) queryAccountsByGroup(ctx context.Context, groupID in
 				tempUnschedulablePredicate(ctx),
 				notExpiredPredicate(now),
 				dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
-				dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)),
+				codexQuotaOverdraftRateLimitPredicate(ctx),
 			)
 		}
 	}
@@ -3084,8 +3079,12 @@ func (r *accountRepository) queryAccountsByGroup(ctx context.Context, groupID in
 
 	groups, err := q.
 		Order(
-			dbaccountgroup.ByPriority(),
 			dbaccountgroup.ByAccountField(dbaccount.FieldPriority),
+			// Account priority is the global scheduling contract.  Membership
+			// priority only breaks ties inside the already isolated group; using it
+			// first lets a low-priority API key outrank a higher-priority OAuth
+			// account merely because it was attached to the group earlier.
+			dbaccountgroup.ByPriority(),
 		).
 		WithAccount().
 		All(ctx)

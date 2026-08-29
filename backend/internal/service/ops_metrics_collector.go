@@ -428,7 +428,7 @@ func (c *OpsMetricsCollector) listSchedulableAccountLoads(ctx context.Context) (
 		}
 		loads = append(loads, AccountWithConcurrency{
 			ID:             account.ID,
-			MaxConcurrency: account.EffectiveLoadFactor(),
+			MaxConcurrency: account.Concurrency,
 		})
 	}
 	return loads, nil

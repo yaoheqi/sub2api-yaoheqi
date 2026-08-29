@@ -329,7 +329,7 @@ func (h *AccountHandler) fetchOpenAIAccountLoadMap(ctx context.Context, openAIAc
 		seen[account.ID] = struct{}{}
 		loadReq = append(loadReq, service.AccountWithConcurrency{
 			ID:             account.ID,
-			MaxConcurrency: account.EffectiveLoadFactor(),
+			MaxConcurrency: account.Concurrency,
 		})
 	}
 	if batchLoad, err := h.concurrencyService.GetAccountsLoadBatch(ctx, loadReq); err != nil {

@@ -74,7 +74,7 @@ func TestListSchedulableAccountLoadsMatchesListSchedulable(t *testing.T) {
 	wantByID := make(map[int64]int, len(accounts))
 	for i := range accounts {
 		accountIDs = append(accountIDs, accounts[i].ID)
-		wantByID[accounts[i].ID] = accounts[i].EffectiveLoadFactor()
+		wantByID[accounts[i].ID] = accounts[i].Concurrency
 	}
 
 	loadIDs := make([]int64, 0, len(loads))

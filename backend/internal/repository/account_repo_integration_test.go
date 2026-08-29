@@ -803,6 +803,29 @@ func (s *AccountRepoSuite) TestListSchedulableByGroupIDAndPlatform() {
 	s.Require().Equal(a1.ID, accounts[0].ID)
 }
 
+func (s *AccountRepoSuite) TestListSchedulableByGroupID_OrdersByAccountPriorityThenGroupPriority() {
+	group := mustCreateGroup(s.T(), s.client, &service.Group{Name: "g-priority-order"})
+	// The OAuth account has the better account priority but a later group
+	// membership priority. Account priority must remain the primary ordering
+	// signal; membership priority is only a tie-breaker within this group.
+	oauth := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name: "oauth-priority", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
+		Schedulable: true, Priority: 1,
+	})
+	apiKey := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name: "apikey-priority", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Schedulable: true, Priority: 50,
+	})
+	mustBindAccountToGroup(s.T(), s.client, oauth.ID, group.ID, 99)
+	mustBindAccountToGroup(s.T(), s.client, apiKey.ID, group.ID, 1)
+
+	accounts, err := s.repo.ListSchedulableByGroupIDAndPlatform(s.ctx, group.ID, service.PlatformOpenAI)
+	s.Require().NoError(err)
+	s.Require().Len(accounts, 2)
+	s.Require().Equal(oauth.ID, accounts[0].ID)
+	s.Require().Equal(apiKey.ID, accounts[1].ID)
+}
+
 func (s *AccountRepoSuite) TestSetSchedulable() {
 	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "acc-sched", Schedulable: true})
 	cacheRecorder := &schedulerCacheRecorder{}

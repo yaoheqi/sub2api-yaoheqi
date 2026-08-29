@@ -578,11 +578,13 @@ func TestOpenAIGatewayServiceLegacyLowRatePriorityUsesConfiguredOAuthReference(t
 
 	first, _, err := svc.SelectAccountWithScheduler(context.Background(), &groupID, "", "", "gpt-test", nil, OpenAIUpstreamTransportAny, false)
 	require.NoError(t, err)
-	require.Equal(t, cheap.ID, first.Account.ID)
+	// Low upstream rate is only a tie-breaker within a priority tier; the
+	// priority-0 account remains preferred over the cheaper lower-priority one.
+	require.Equal(t, expensive.ID, first.Account.ID)
 
 	second, _, err := svc.SelectAccountWithScheduler(context.Background(), &groupID, "", "", "gpt-test", map[int64]struct{}{cheap.ID: {}}, OpenAIUpstreamTransportAny, false)
 	require.NoError(t, err)
-	require.Equal(t, oauth.ID, second.Account.ID)
+	require.Equal(t, expensive.ID, second.Account.ID)
 }
 
 func TestOpenAIModelsSelectionIgnoresTokenCostSignal(t *testing.T) {
@@ -631,9 +633,9 @@ func TestOpenAIGatewayServiceLegacyLowRatePriorityIsIndependentFromAdvancedSched
 		wantID    int64
 	}{
 		{name: "switch off keeps priority first", loadBatch: true, wantID: 2},
-		{name: "load batch", enabled: true, loadBatch: true, wantID: 1},
-		{name: "load batch disabled", enabled: true, wantID: 1},
-		{name: "load lookup failure", enabled: true, loadBatch: true, loadErr: errors.New("load unavailable"), wantID: 1},
+		{name: "load batch", enabled: true, loadBatch: true, wantID: 2},
+		{name: "load batch disabled", enabled: true, wantID: 2},
+		{name: "load lookup failure", enabled: true, loadBatch: true, loadErr: errors.New("load unavailable"), wantID: 2},
 	}
 
 	for _, tt := range tests {

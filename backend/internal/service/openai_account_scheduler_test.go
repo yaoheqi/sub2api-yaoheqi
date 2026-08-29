@@ -1248,9 +1248,11 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_StickyWeightedSessionIn
 	require.NoError(t, err)
 	require.NotNil(t, selection)
 	require.NotNil(t, selection.Account)
-	require.Equal(t, int64(37101), selection.Account.ID)
+	// Sticky weighted selection cannot bypass the preferred account priority
+	// tier, even when the sticky account has a strong sticky weight.
+	require.Equal(t, int64(37102), selection.Account.ID)
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
-	require.True(t, decision.StickySessionHit)
+	require.False(t, decision.StickySessionHit)
 	require.Equal(t, 2, decision.TopK)
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
@@ -2285,6 +2287,78 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionSticky(t *testin
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}
+}
+
+func TestOpenAIGatewayService_LoadBatchStickyYieldsToHigherPriorityOAuth(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(10109)
+	accounts := []Account{
+		{ID: 21501, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 50, GroupIDs: []int64{groupID}},
+		{ID: 21502, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1, GroupIDs: []int64{groupID}},
+	}
+	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{"openai:session_hash_priority": 21501}}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = true
+	cfg.Gateway.Scheduling.StickySessionMaxWaiting = 2
+	cfg.Gateway.OpenAIWS.Enabled = true
+	cfg.Gateway.OpenAIWS.OAuthEnabled = true
+	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
+	concurrency := schedulerTestConcurrencyCache{
+		loadMap: map[int64]*AccountLoadInfo{
+			21501: {AccountID: 21501, LoadRate: 0},
+			21502: {AccountID: 21502, LoadRate: 0},
+		},
+		acquireResults: map[int64]bool{21501: true, 21502: true},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              cache,
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(concurrency),
+	}
+
+	selection, err := svc.SelectAccountWithLoadAwareness(ctx, &groupID, "session_hash_priority", "gpt-5.1", nil)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(21502), selection.Account.ID)
+	require.Equal(t, 1, cache.deletedSessions["openai:session_hash_priority"])
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIAdvancedScheduler_StickyYieldExcludesEscapedAccountAndRebinds(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(10110)
+	accounts := []Account{
+		{ID: 21511, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 50, GroupIDs: []int64{groupID}},
+		{ID: 21512, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1, GroupIDs: []int64{groupID}},
+	}
+	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{"openai:sticky-yield-rebind": 21511}}
+	cfg := &config.Config{}
+	svc := &OpenAIGatewayService{
+		accountRepo:      schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:            cache,
+		cfg:              cfg,
+		rateLimitService: newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{
+			loadMap: map[int64]*AccountLoadInfo{21511: {AccountID: 21511}, 21512: {AccountID: 21512}},
+		}),
+	}
+
+	selection, decision, err := svc.SelectAccountWithScheduler(ctx, &groupID, "", "sticky-yield-rebind", "gpt-5.1", nil, OpenAIUpstreamTransportAny, false)
+	require.NoError(t, err)
+	require.Equal(t, int64(21512), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	// The escaped account was excluded for this pass, and the fallback account
+	// becomes the durable binding for subsequent requests.
+	require.Equal(t, int64(21512), cache.sessionBindings["openai:sticky-yield-rebind"])
+
+	selection, decision, err = svc.SelectAccountWithScheduler(ctx, &groupID, "", "sticky-yield-rebind", "gpt-5.1", nil, OpenAIUpstreamTransportAny, false)
+	require.NoError(t, err)
+	require.Equal(t, int64(21512), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerSessionSticky, decision.Layer)
 }
 
 func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionStickyBusyKeepsSticky(t *testing.T) {
@@ -3360,15 +3434,24 @@ func TestSelectTopKOpenAICandidates(t *testing.T) {
 
 	top2 := selectTopKOpenAICandidates(candidates, 2)
 	require.Len(t, top2, 2)
-	require.Equal(t, int64(13), top2[0].account.ID)
-	require.Equal(t, int64(11), top2[1].account.ID)
+	// Account priority is a hard ordering boundary; score/load only rank
+	// accounts within the same priority tier.
+	require.Equal(t, int64(14), top2[0].account.ID)
+	require.Equal(t, int64(13), top2[1].account.ID)
 
 	topAll := selectTopKOpenAICandidates(candidates, 8)
 	require.Len(t, topAll, len(candidates))
-	require.Equal(t, int64(13), topAll[0].account.ID)
-	require.Equal(t, int64(11), topAll[1].account.ID)
+	require.Equal(t, int64(14), topAll[0].account.ID)
+	require.Equal(t, int64(13), topAll[1].account.ID)
 	require.Equal(t, int64(12), topAll[2].account.ID)
-	require.Equal(t, int64(14), topAll[3].account.ID)
+	require.Equal(t, int64(11), topAll[3].account.ID)
+}
+
+func TestOpenAIAccountLoadRequestUsesConcurrency(t *testing.T) {
+	loadFactor := 1000
+	account := &Account{ID: 21701, Concurrency: 15, LoadFactor: &loadFactor}
+	require.Equal(t, 1000, account.EffectiveLoadFactor())
+	require.Equal(t, 15, buildOpenAIAccountLoadRequest([]*Account{account})[0].MaxConcurrency)
 }
 
 func TestBuildOpenAIWeightedSelectionOrder_DeterministicBySessionSeed(t *testing.T) {
@@ -3527,6 +3610,91 @@ func TestBuildOpenAIWeightedSelectionOrder_HandlesInvalidScores(t *testing.T) {
 		seen[item.account.ID] = struct{}{}
 	}
 	require.Len(t, seen, len(candidates))
+}
+
+func TestBuildOpenAIWeightedSelectionOrder_PriorityTierIsHardBoundary(t *testing.T) {
+	candidates := []openAIAccountCandidateScore{
+		{account: &Account{ID: 21801, Priority: 1, Type: AccountTypeOAuth}, priority: 1, groupPriority: 1, score: 1, loadInfo: &AccountLoadInfo{LoadRate: 95}},
+		{account: &Account{ID: 21802, Priority: 1, Type: AccountTypeOAuth}, priority: 1, groupPriority: 1, score: 2, loadInfo: &AccountLoadInfo{LoadRate: 90}},
+		// The API key has a much better score/load, but must remain overflow.
+		{account: &Account{ID: 21803, Priority: 50, Type: AccountTypeAPIKey}, priority: 50, groupPriority: 1, score: 100, loadInfo: &AccountLoadInfo{LoadRate: 1}},
+	}
+	order := buildOpenAIWeightedSelectionOrder(candidates, OpenAIAccountScheduleRequest{SessionHash: "priority-tier"})
+	require.Len(t, order, len(candidates))
+	require.Equal(t, int64(21803), order[2].account.ID)
+}
+
+func TestBuildOpenAIWeightedSelectionOrder_DerivesPriorityFromAccountSnapshot(t *testing.T) {
+	groupID := int64(21809)
+	preferred := &Account{
+		ID: 21809, Priority: 1,
+		AccountGroups: []AccountGroup{{GroupID: groupID, Priority: 2}},
+	}
+	apiKey := &Account{
+		ID: 21810, Priority: 50,
+		AccountGroups: []AccountGroup{{GroupID: groupID, Priority: 1}},
+	}
+	// Simulate an older scheduler snapshot where denormalized priority fields
+	// were left at zero. The account snapshot must remain authoritative.
+	candidates := []openAIAccountCandidateScore{
+		{account: preferred, priority: 0, groupPriority: 0, score: 1, loadInfo: &AccountLoadInfo{}},
+		{account: apiKey, priority: 0, groupPriority: 0, score: 100, loadInfo: &AccountLoadInfo{}},
+	}
+	order := buildOpenAIWeightedSelectionOrder(candidates, OpenAIAccountScheduleRequest{
+		GroupID: &groupID, SessionHash: "priority-derived",
+	})
+	require.Len(t, order, 2)
+	require.Equal(t, preferred.ID, order[0].account.ID)
+}
+
+func TestBuildOpenAISelectionOrder_StickyLowerPriorityDoesNotPreemptPreferredTier(t *testing.T) {
+	preferred := &Account{ID: 21811, Priority: 1, Type: AccountTypeOAuth}
+	stickyLower := &Account{ID: 21812, Priority: 50, Type: AccountTypeAPIKey}
+	plan := openAIAccountLoadPlan{
+		topK:                    2,
+		includeOverflowFallback: true,
+	}
+	for i, account := range []*Account{preferred, stickyLower} {
+		plan.allCandidates = append(plan.allCandidates, openAIAccountCandidateScore{
+			account: account, priority: account.Priority, groupPriority: 1,
+			loadInfo: &AccountLoadInfo{AccountID: account.ID, LoadRate: i}, score: float64(i),
+		})
+	}
+	// buildOpenAISelectionOrder consumes candidate scores from plan.candidates;
+	// construct the score slice explicitly to mirror the scheduler snapshot.
+	plan.candidates = plan.allCandidates
+	req := OpenAIAccountScheduleRequest{StickyWeighted: true, StickyAccountID: stickyLower.ID, SessionHash: "sticky-priority"}
+	scheduler := &defaultOpenAIAccountScheduler{service: &OpenAIGatewayService{}}
+	order := scheduler.buildOpenAISelectionOrder(req, plan)
+	require.Len(t, order, 2)
+	require.Equal(t, preferred.ID, order[0].account.ID)
+}
+
+func TestOpenAIGatewaySelectBestAccount_PriorityPrecedesLowUpstreamRate(t *testing.T) {
+	groupID := int64(21820)
+	apiKey := upstreamCostTestAccount(21822, UpstreamBillingProbeStatusOK, 0.01, time.Now().Add(-time.Minute), 30*time.Minute)
+	apiKey.Priority = 50
+	apiKey.Schedulable = true
+	apiKey.Status = StatusActive
+	apiKey.Concurrency = 10
+	apiLoadFactor := 1
+	apiKey.LoadFactor = &apiLoadFactor
+	oauthLoadFactor := 1000
+	oauth := Account{
+		ID: 21821, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive,
+		Schedulable: true, Concurrency: 10, Priority: 1,
+		LoadFactor:    &oauthLoadFactor,
+		AccountGroups: []AccountGroup{{GroupID: groupID, Priority: 1}},
+	}
+	apiKey.AccountGroups = []AccountGroup{{GroupID: groupID, Priority: 1}}
+	svc := &OpenAIGatewayService{
+		accountRepo: schedulerTestOpenAIAccountRepo{accounts: []Account{oauth, *apiKey}},
+		cfg:         &config.Config{},
+	}
+	selected, _, _ := svc.selectBestAccount(context.Background(), &groupID, PlatformOpenAI,
+		[]Account{oauth, *apiKey}, "gpt-5.1", nil, false, "", true)
+	require.NotNil(t, selected)
+	require.Equal(t, oauth.ID, selected.ID)
 }
 
 func TestOpenAISelectionRNG_SeedZeroStillWorks(t *testing.T) {

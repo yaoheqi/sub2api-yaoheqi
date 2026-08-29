@@ -75,9 +75,9 @@ func (s *OpsService) getAccountsLoadMapBestEffort(ctx context.Context, accounts 
 		if acc.ID <= 0 {
 			continue
 		}
-		lf := acc.EffectiveLoadFactor()
-		if prev, ok := unique[acc.ID]; !ok || lf > prev {
-			unique[acc.ID] = lf
+		concurrency := acc.Concurrency
+		if prev, ok := unique[acc.ID]; !ok || concurrency > prev {
+			unique[acc.ID] = concurrency
 		}
 	}
 

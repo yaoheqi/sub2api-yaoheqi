@@ -188,6 +188,12 @@
           </div>
         </template>
 
+        <template #cell-cache_rate="{ row }">
+          <span class="text-sm font-medium tabular-nums text-gray-900 dark:text-white">
+            {{ formatCacheRate(row) }}
+          </span>
+        </template>
+
         <template #cell-cost="{ row }">
           <div class="text-sm">
             <div class="flex items-center gap-1.5">
@@ -588,6 +594,12 @@ const ipGeoBatchLoading = ref(false)
 const showIpGeoToolbar = computed(() => props.columns.some((col) => col.key === 'ip_address'))
 
 const sentUpstreamModel = (row: AdminUsageLog): string => row.upstream_model?.trim() || row.model?.trim() || ''
+
+const formatCacheRate = (row: AdminUsageLog): string => {
+  const totalPromptTokens = row.input_tokens + row.cache_read_tokens + row.cache_creation_tokens
+  if (totalPromptTokens <= 0) return '0.0%'
+  return `${((row.cache_read_tokens / totalPromptTokens) * 100).toFixed(1)}%`
+}
 
 const normalizeModelVariant = (model: string): string => model
   .trim()

@@ -86,6 +86,7 @@ const DataTableStub = {
         <slot name="cell-model" :row="row" :value="row.model" />
         <slot name="cell-billing_mode" :row="row" />
         <slot name="cell-tokens" :row="row" />
+        <slot name="cell-cache_rate" :row="row" />
         <slot name="cell-cost" :row="row" />
         <slot name="cell-request_id" :row="row" />
       </div>
@@ -134,6 +135,33 @@ describe('admin UsageTable tooltip', () => {
       height: 20,
       toJSON: () => ({}),
     } as DOMRect)
+  })
+
+  it('shows cache rate against all prompt tokens', () => {
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [{
+          ...baseImageRow,
+          request_id: 'req-cache-rate',
+          billing_mode: 'token',
+          input_tokens: 500,
+          cache_read_tokens: 1500,
+          cache_creation_tokens: 0,
+        }],
+        loading: false,
+        columns: [{ key: 'cache_rate', label: 'Cache rate' }],
+      },
+      global: {
+        stubs: {
+          DataTable: DataTableStub,
+          EmptyState: true,
+          Icon: true,
+          Teleport: true,
+        },
+      },
+    })
+
+    expect(wrapper.text()).toContain('75.0%')
   })
 
   it('marks only usage rows that actually applied long-context billing', () => {

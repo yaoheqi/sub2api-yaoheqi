@@ -343,6 +343,7 @@ export default {
     out: 'Out',
     cacheHit: 'Cache hit',
     cacheCreate: 'Cache create',
+    cacheRate: 'Cache rate',
     cacheHitRate: 'Cache hit rate',
     inputTokenPrice: 'Input price',
     outputTokenPrice: 'Output price',
